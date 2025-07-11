@@ -21,7 +21,7 @@ sys.path.append(x1d_dir)
 import romanprism_fast_x1d as oned_utils  # noqa
 
 
-def get_model_init(model, y_fit, x_fit):
+def get_model_init(model, y_fit, x_fit, xloc):
 
     if model == 'sersic':
 
@@ -43,7 +43,7 @@ def get_model_init(model, y_fit, x_fit):
 
         # Initial guess: amplitude=max(y), x_0 at peak, gamma=1, alpha=1.5
         amplitude_init = y_fit.max()
-        x_0_init = x_fit[np.argmax(y_fit)]
+        x_0_init = xloc
         gamma_init = 5
         alpha_init = 1.5
 
@@ -53,7 +53,9 @@ def get_model_init(model, y_fit, x_fit):
         # print('alpha [power index]:', alpha_init)
 
         model_init = models.Moffat1D(amplitude=amplitude_init, x_0=x_0_init,
-                                     gamma=gamma_init, alpha=alpha_init)
+                                     gamma=gamma_init, alpha=alpha_init,
+                                     fixed={'x_0': True},
+                                     bounds={'amplitude': (0, amplitude_init)})
 
     elif model == 'gauss':
 
@@ -98,7 +100,7 @@ def prep_fit(y, x=None, mask=None):
     return x_fit, y_fit, prep_flag
 
 
-def fit_1d(y_fit, x_fit, model=None, row_idx=None):
+def fit_1d(y_fit, x_fit, xloc=50, model=None, row_idx=None):
     """
     Fit a Moffat or Sersic profile to 1D data using astropy.
 
@@ -110,9 +112,9 @@ def fit_1d(y_fit, x_fit, model=None, row_idx=None):
         fitted_model: The best-fit astropy model.
     """
 
-    model_init = get_model_init(model, y_fit, x_fit)
+    model_init = get_model_init(model, y_fit, x_fit, xloc)
 
-    fit = fitting.LevMarLSQFitter()
+    fit = fitting.TRFLSQFitter()
     try:
         fitted_model = fit(model_init, x_fit, y_fit)
     except astropy.modeling.fitting.NonFiniteValueError:
@@ -163,44 +165,18 @@ def get_row_std_objmasked(arr, mask=None):
         return np.std(arr)
 
 
-def get_sn_host_loc(fname):
+def get_sn_host_loc(fname, snra, sndec, hostra, hostdec):
 
-    truthfile = fname.replace('truth', 'index')
-    truthfile = datadir + truthfile.replace('.fits', '.txt')
+    header = fits.getheader(datadir + fname, ext=1)
+    wcs = WCS(header)
 
-    truth = np.genfromtxt(truthfile, dtype=None, names=True, encoding='ascii')
+    snloc = wcs.world_to_pixel_values(snra, sndec)
+    xsn = float(snloc[0])
+    ysn = float(snloc[1])
 
-    """
-    sn_idx = np.where(truth['obj_type'] == 'transient')[0]
-    if sn_idx.size:
-        sn_idx = int(sn_idx)
-        xsn = truth['x'][sn_idx]
-        ysn = truth['y'][sn_idx]
-    else:
-        print('No transient in truth file. Exiting.')
-        sys.exit(0)
-    """
-
-    # There are two galaxies in the image.
-    # The brighter of the two is the host.
-    # I think the truth file is just misclassifying the
-    # transient as galaxy. There are always two objects ithe truth file.
-    # One is much fainter -- assumed to be the SN.
-    galaxy_idxs = np.where(truth['obj_type'] == 'galaxy')[0]
-    galaxy_mags = []
-    for i in galaxy_idxs:
-        current_mag = truth['mag'][i]
-        galaxy_mags.append(current_mag)
-
-    galaxy_mags = np.asarray(galaxy_mags)
-    host_idx = np.argmin(galaxy_mags)
-
-    xhost = truth['x'][host_idx]
-    yhost = truth['y'][host_idx]
-
-    sn_idx = np.argmax(galaxy_mags)
-    xsn = truth['x'][sn_idx]
-    ysn = truth['y'][sn_idx]
+    hostloc = wcs.world_to_pixel_values(hostra, hostdec)
+    xhost = float(hostloc[0])
+    yhost = float(hostloc[1])
 
     return xsn, ysn, xhost, yhost
 
@@ -219,14 +195,14 @@ if __name__ == '__main__':
     # Minimum number of pixels in a row above 3-sigma to fit a profile
     # These have to be contiguous
     # i.e., these are sigma_thresh above the background
-    numpix_fit_thresh = 8
+    numpix_fit_thresh = 5
 
     # Sigma threshold for the pixels to be considered
-    sigma_thresh = 3.0
+    sigma_thresh = 2
 
     # user guess for starting row at which real signal
     # for the host galaxy starts
-    start_row = 10
+    start_row = 50
 
     # starting and ending wavelengths for x1d
     start_wav = 0.7
@@ -234,24 +210,30 @@ if __name__ == '__main__':
 
     # Pads for masking SN and host
     galmaskpad = 6
-    snmaskpad = 5
+    snmaskpad = 2
 
     # Cutout size
     cutoutsize_y_lo = 200
     cutoutsize_y_hi = 100
     cutoutsize_x = 100
 
-    spec_img_exptime = 1000  # seconds
+    spec_img_exptime = 900  # seconds
 
     # File name
-    fname = 'Roman_TDS_truth_SNPrism_19_5_1000_galsn.fits'
+    fname = 'test_prism_WFI_rollAngle000_dither0.fits'
+
+    # Coordinates
+    snra = 7.6022277
+    sndec = -44.7897423
+    hostra = 7.602432752
+    hostdec = -44.78963685
 
     # Input spectra
     host_spec_fname = datadir + 'lfgal.txt'
     sn_spec_fname = datadir + 'lfnana.txt'
 
     # For 1D extraction
-    obj_one_sided_width = 5
+    obj_one_sided_width = 2
 
     # END USER INPUTS
     # ==========================
@@ -259,7 +241,8 @@ if __name__ == '__main__':
     print('Working on file:', fname)
 
     # Get SN and host locations from truth file
-    xsn, ysn, xhost, yhost = get_sn_host_loc(fname)
+    xsn, ysn, xhost, yhost = get_sn_host_loc(fname, snra, sndec,
+                                             hostra, hostdec)
 
     # Read in input spectra
     host_input_wav, host_input_flux = np.loadtxt(host_spec_fname, unpack=True)
@@ -267,7 +250,11 @@ if __name__ == '__main__':
 
     # Load image
     prismimg = fits.open(datadir + fname)
-    prismdata = prismimg[0].data
+    # ext=1 is SCI
+    # ext=2 is ERR
+    # ext=3 is DQ
+    # ext=4 is TRUE
+    prismdata = prismimg[4].data
 
     # convert to integer pixels
     row = int(ysn)
@@ -296,8 +283,8 @@ if __name__ == '__main__':
           'This should use something like the Horne86 optimal extraction.')
     print('* NOTE: try stacking rows for the harder cases.')
     print('* NOTE: iterate with constraints on fit params.')
-    print('* NOTE: Assuming the fainter galaxy in the truth file',
-          'is actually the SN. Make sure this is correct.')
+    print('* NOTE: Check WCS and x,y coords returned by above func in ds9.')
+    print('* NOTE: Figure out how to handle ERR and DQ extensions.')
     print('\n\n')
 
     # Cutout centered on SN loc
@@ -308,7 +295,7 @@ if __name__ == '__main__':
     if showcutoutplot:
         fig = plt.figure()
         ax = fig.add_subplot(111)
-        cax = ax.imshow(np.log10(cutout), origin='lower', vmin=0.5, vmax=3.0)
+        cax = ax.imshow(np.log10(cutout), origin='lower', vmin=1.5, vmax=2.5)
         cbar = fig.colorbar(cax)
         cbar.set_label('log(pix val)')
         plt.show()
@@ -357,7 +344,7 @@ if __name__ == '__main__':
         res = get_contiguous_slices(pix_over_thresh,
                                     min_length=numpix_fit_thresh)
         if not res:
-            # print('Too few pixels above 3-sigma to fit. Skipping.')
+            print('Row:', i, 'Too few pixels above 3-sigma to fit. Skipping.')
             continue
 
         # ------ Proceed to fitting
@@ -368,8 +355,8 @@ if __name__ == '__main__':
                                                        mask=sn_mask_idx)
         if not gal_prep_flag:
             continue
-        galaxy_fit = fit_1d(gal_y_fit, gal_x_fit, model='moffat',
-                            row_idx=i)
+        galaxy_fit = fit_1d(gal_y_fit, gal_x_fit, xloc=cutout_host_x,
+                            model='moffat', row_idx=i)
 
         # Fit a moffat profile to the supernova "residual"
         # generate mask first. You know the x loc of the SN
@@ -483,14 +470,14 @@ if __name__ == '__main__':
     ax2 = fig.add_subplot(132)
     ax3 = fig.add_subplot(133)
 
-    ax1.imshow(np.log10(cutout), origin='lower', vmin=0.5, vmax=3.0)
+    ax1.imshow(np.log10(cutout), origin='lower', vmin=0.5, vmax=2.5)
     ax1.set_title('SN + Host original image cutout')
 
-    ax2.imshow(np.log10(host_model), origin='lower', vmin=0.5, vmax=3.0)
+    ax2.imshow(np.log10(host_model), origin='lower', vmin=0.5, vmax=2.5)
     ax2.set_title('File: ' + fname + '\n' + 'Host model')
 
     ax3.imshow(np.log10(recovered_sn_2d), origin='lower',
-               vmin=0.5, vmax=3.0)
+               vmin=0.5, vmax=2.5)
     ax3.set_title('SN residual')
 
     fig.savefig(fname.replace('.fits', '_2dparamfit.png'),
@@ -535,6 +522,7 @@ if __name__ == '__main__':
 
     ax2.scatter(specwav, spec_resid, s=4, c='k')
 
+    ax2.set_xlim(0.65, 2.0)
     ax2.set_ylim(-1.5, 1.5)
 
     fig.savefig(fname.replace('.fits', '_1dparamfit_phys.png'),

@@ -1,0 +1,63 @@
+---
+# Plotting
+showcutoutplot: False
+showfit: False
+
+# use this flag to not mask anything
+# we need this if masking one object would also mask the other
+donotmask: False
+
+# Minimum number of pixels in a row above 3-sigma to fit a profile
+# These have to be contiguous
+# i.e., these are sigma_thresh above the background
+numpix_fit_thresh: 5
+
+# Sigma threshold for the pixels to be considered
+sigma_thresh: 2.0
+
+# max iterations for fitting
+max_iter: 10
+
+# user guess for starting row at which real signal
+# for the host galaxy starts
+start_row: 50
+
+# Pads for masking SN and host
+galmaskpad: 6
+snmaskpad: 3
+
+# Cutout size
+cutoutsize_y_lo: 200
+cutoutsize_y_hi: 100
+cutoutsize_x: 100
+
+spec_img_exptime: 900  # seconds
+
+# Smooth before fitting
+applysmoothing: True
+
+# File name
+fname: 'test_prism_WFI_rollAngle000_dither0.fits'
+
+# Extension numbers in FITS file
+sciextnum: 1
+
+# Coordinates
+snra: 7.6022277
+sndec: -44.7897423
+hostra: 7.602432752
+hostdec: -44.78963685
+
+# Input spectra
+host_spec_fname: 'lfgal.txt'
+sn_spec_fname: 'lfnana.txt'
+
+# For 1D extraction
+obj_one_sided_width: 3
+
+# starting and ending wavelengths for x1d
+start_wav: 0.7
+end_wav: 1.8
+
+# Runtime config
+verbose: False

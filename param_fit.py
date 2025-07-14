@@ -6,10 +6,13 @@ import astropy
 from astropy.wcs import WCS
 from scipy.interpolate import griddata
 from matplotlib.gridspec import GridSpec
+from scipy.signal import savgol_filter
 
 import sys
 import os
 # from tqdm import tqdm
+from pprint import pprint
+import yaml
 
 home = os.getenv('HOME')
 prismdir = hostsubdir = home + '/Documents/Roman/PIT/prism/'
@@ -71,8 +74,19 @@ def get_model_init(model, y_fit, x_fit, xloc):
     return model_init
 
 
-def prep_fit(y, x=None, mask=None):
+def prep_fit(cfg, y, x=None, mask=None):
+    """
+    Function to prepare x,y arrays for 1D model fitting.
+    It does the following things:
+    - generate x array if not provided
+    - apply any masks given by user
+    - ensure valid values in y array by masking NaN values
+    - check that there are at least 'numpix_fit_thresh'
+      valid pixels to fit. After NaNs are masked and SN+host
+      are masked it needs these min number of pix to fit.
+    """
 
+    # Generate x array as needed
     y = np.asarray(y)
     if x is None:
         x = np.arange(len(y))
@@ -80,6 +94,7 @@ def prep_fit(y, x=None, mask=None):
         x = np.asarray(x)
 
     # Apply mask
+    donotmask = cfg['donotmask']
     if mask is not None and not donotmask:
         x_fit = np.delete(x, mask)
         y_fit = np.delete(y, mask)
@@ -87,13 +102,14 @@ def prep_fit(y, x=None, mask=None):
         x_fit = x
         y_fit = y
 
-    # Additionally mask NaNs and negative values
-    valid_mask = (y_fit >= 0) & (np.isfinite(y_fit))
+    # Additionally mask NaNs
+    valid_mask = np.isfinite(y_fit)
     x_fit = x_fit[valid_mask]
     y_fit = y_fit[valid_mask]
 
     # Also check min len requirement
     prep_flag = True
+    numpix_fit_thresh = cfg['numpix_fit_thresh']
     if len(x_fit) < numpix_fit_thresh:
         prep_flag = False
 
@@ -159,10 +175,10 @@ def get_contiguous_slices(arr, min_length=10):
 def get_row_std_objmasked(arr, mask=None):
     if mask is not None:
         arr_fit = np.delete(arr, mask)
-        std = np.std(arr_fit)
+        std = np.nanstd(arr_fit)
         return std
     else:
-        return np.std(arr)
+        return np.nanstd(arr)
 
 
 def get_sn_host_loc(fname, snra, sndec, hostra, hostdec):
@@ -181,145 +197,31 @@ def get_sn_host_loc(fname, snra, sndec, hostra, hostdec):
     return xsn, ysn, xhost, yhost
 
 
-if __name__ == '__main__':
+def gen_host_model(cutout, cfg):
 
-    # ==========================
-    # START USER INPUTS
-    showcutoutplot = False
-    showfit = False
-
-    # use this flag to not mask anything
-    # we need this if masking one object would also mask the other
-    donotmask = False
-
-    # Minimum number of pixels in a row above 3-sigma to fit a profile
-    # These have to be contiguous
-    # i.e., these are sigma_thresh above the background
-    numpix_fit_thresh = 5
-
-    # Sigma threshold for the pixels to be considered
-    sigma_thresh = 2
-
-    # user guess for starting row at which real signal
-    # for the host galaxy starts
-    start_row = 50
-
-    # starting and ending wavelengths for x1d
-    start_wav = 0.7
-    end_wav = 1.8
-
-    # Pads for masking SN and host
-    galmaskpad = 6
-    snmaskpad = 2
-
-    # Cutout size
-    cutoutsize_y_lo = 200
-    cutoutsize_y_hi = 100
-    cutoutsize_x = 100
-
-    spec_img_exptime = 900  # seconds
-
-    # File name
-    fname = 'test_prism_WFI_rollAngle000_dither0.fits'
-
-    # Coordinates
-    snra = 7.6022277
-    sndec = -44.7897423
-    hostra = 7.602432752
-    hostdec = -44.78963685
-
-    # Input spectra
-    host_spec_fname = datadir + 'lfgal.txt'
-    sn_spec_fname = datadir + 'lfnana.txt'
-
-    # For 1D extraction
-    obj_one_sided_width = 2
-
-    # END USER INPUTS
-    # ==========================
-
-    print('Working on file:', fname)
-
-    # Get SN and host locations from truth file
-    xsn, ysn, xhost, yhost = get_sn_host_loc(fname, snra, sndec,
-                                             hostra, hostdec)
-
-    # Read in input spectra
-    host_input_wav, host_input_flux = np.loadtxt(host_spec_fname, unpack=True)
-    sn_input_wav, sn_input_flux = np.loadtxt(sn_spec_fname, unpack=True)
-
-    # Load image
-    prismimg = fits.open(datadir + fname)
-    # ext=1 is SCI
-    # ext=2 is ERR
-    # ext=3 is DQ
-    # ext=4 is TRUE
-    prismdata = prismimg[4].data
-
-    # convert to integer pixels
-    row = int(ysn)
-    col = int(xsn)
-    # print('SN row:', row, 'col:', col)
-
-    # TODO list
-    print('\nTODO LIST:')
-    print('* NOTE: Automate the cropping later. You will need galaxy',
-          'half-light radius or the a & b elliptical axes from',
-          'something like SExtractor to measure the cutout size.')
-    print('* NOTE: Using default half-light radius initial guess.',
-          'This would be better if user provided.')
-    print('* NOTE: Using only Sersic/Gaussian profile to fit galaxy.',
-          'This really should be a model profile convolved with',
-          'lambda dependent PSF. Convolve Moffat for SN with PSF too.')
-    print('* NOTE: approx host galaxy position used here for masking.',
-          'This needs to come from the user.')
-    print('TODO: write code to handle case where host galaxy is also',
-          'contaminated by another galaxy spectrum (typically only a part',
-          'of the host spec will be covered by the other spectrum).')
-    print('* NOTE: using the max val in the cutout as the amplitude',
-          'as the initial guess. Should work in most cases.')
-    print('* NOTE: SN 1D spectrum is just collapsing the 2D residuals.',
-          'It calls onedutils which does the simple sum.',
-          'This should use something like the Horne86 optimal extraction.')
-    print('* NOTE: try stacking rows for the harder cases.')
-    print('* NOTE: iterate with constraints on fit params.')
-    print('* NOTE: Check WCS and x,y coords returned by above func in ds9.')
-    print('* NOTE: Figure out how to handle ERR and DQ extensions.')
-    print('\n\n')
-
-    # Cutout centered on SN loc
-    cutout = prismdata[row - cutoutsize_y_lo: row + cutoutsize_y_hi,
-                       col - int(cutoutsize_x/2): col + int(cutoutsize_x/2)]
-
-    # plot
-    if showcutoutplot:
-        fig = plt.figure()
-        ax = fig.add_subplot(111)
-        cax = ax.imshow(np.log10(cutout), origin='lower', vmin=1.5, vmax=2.5)
-        cbar = fig.colorbar(cax)
-        cbar.set_label('log(pix val)')
-        plt.show()
-        fig.savefig(fname.replace('.fits', '_cutout.png'), dpi=200,
-                    bbox_inches='tight')
-        fig.clear()
-        plt.close(fig)
-
-    # ==========================
-    # For diagnostic purposes
+    # ----- Get user config values needed
+    start_row = cfg['start_row']
+    # You can change end row here for diagnostic purposes
     # The end_row should be set to the end of the cutout
     # but this can be set to the start_row + some other
     # number of rows that you'd like to see fits for
-    end_row = cutout.shape[0]
+    end_row = cutout.shape[0]  # start_row + 10  # cutout.shape[0]
 
-    # Now fit the profile
-    xarr = np.arange(cutoutsize_x)
+    # fit thresh
+    sigma_thresh = cfg['sigma_thresh']
+    numpix_fit_thresh = cfg['numpix_fit_thresh']
 
+    # ----- Masks
     # We actually need to create the masks first
     # mask the SN
+    # Note that these indices are relative to the cutout indices.
+    # because the cutout was already centered on xsn we can just
+    # mask out hte central pixels
+    snmaskpad = cfg['snmaskpad']
+    galmaskpad = cfg['galmaskpad']
     sn_mask_idx = np.arange(int(cutoutsize_x/2) - snmaskpad,
                             int(cutoutsize_x/2) + snmaskpad)
     # mask the galaxy
-    cutout_host_x = int(cutoutsize_x/2) + int(int(xhost) - col)
     # print('Host cutout center idx:', cutout_host_x)
     gal_mask_idx = np.arange(cutout_host_x - galmaskpad,
                              cutout_host_x + galmaskpad)
@@ -327,13 +229,18 @@ if __name__ == '__main__':
     combinedmask = np.union1d(sn_mask_idx, gal_mask_idx)
     # print('combined mask:', combinedmask)
 
-    # Empty array for host model
-    host_model = np.zeros_like(cutout)
+    # ----- loop over all rows
+    host_fit_params = {}
 
-    # loop over all rows
     for i in range(start_row, end_row):
         # print('\nFitting row:', i)
         profile_pix = cutout[i]
+
+        # ----- Apply a Savitsky-Golay filter to the data, if user requested
+        applysmoothing = cfg['applysmoothing']
+        if applysmoothing:
+            profile_pix = savgol_filter(profile_pix, window_length=5,
+                                        polyorder=2)
 
         # ----- Skipping criterion
         stdrow = get_row_std_objmasked(profile_pix, mask=combinedmask)
@@ -344,14 +251,15 @@ if __name__ == '__main__':
         res = get_contiguous_slices(pix_over_thresh,
                                     min_length=numpix_fit_thresh)
         if not res:
-            print('Row:', i, 'Too few pixels above 3-sigma to fit. Skipping.')
+            print('Row:', i, 'Too few pixels above',
+                  sigma_thresh, 'sigma to fit. Skipping.')
             continue
 
         # ------ Proceed to fitting
         # Fit a "modified" Sersic profile to the galaxy
         # print('\nFitting galaxy profile...')
         # print('SN mask:', sn_mask_idx)
-        gal_x_fit, gal_y_fit, gal_prep_flag = prep_fit(profile_pix, xarr,
+        gal_x_fit, gal_y_fit, gal_prep_flag = prep_fit(cfg, profile_pix, xarr,
                                                        mask=sn_mask_idx)
         if not gal_prep_flag:
             continue
@@ -359,27 +267,24 @@ if __name__ == '__main__':
                             model='moffat', row_idx=i)
 
         # Fit a moffat profile to the supernova "residual"
-        # generate mask first. You know the x loc of the SN
-        # we are just going to mask 10 pix on each side.
-        # Note that these indices are relative to the cutout indices.
-        # because the cutout was already centered on xsn we can just
-        # mask out hte central pixels
-        # print('\nFitting SN profile...')
         residual_pix = profile_pix - galaxy_fit(xarr)
 
         # Now mask the galaxy indices
-        # This is needed even though for an ideal fit
-        # the residuals should be normally distributed around zero
-        # for the host galaxy. IT is needed because the fits arent
-        # usually perfect.
-        # print('galaxy mask:', gal_mask_idx)
-        sn_x_fit, sn_y_fit, sn_prep_flag = prep_fit(residual_pix, xarr,
+        sn_x_fit, sn_y_fit, sn_prep_flag = prep_fit(cfg, residual_pix, xarr,
                                                     mask=gal_mask_idx)
         if not sn_prep_flag:
             continue
         moffat_fit = fit_1d(sn_y_fit, sn_x_fit, model='moffat')
 
-        if showfit:
+        if cfg['showfit']:
+            print('----------------')
+            print('Galaxy fit result:')
+            print(galaxy_fit)
+
+            print('SN fit result:')
+            print(moffat_fit)
+            print('----------------')
+
             fig = plt.figure(figsize=(7, 5))
             ax1 = fig.add_subplot(311)
             ax2 = fig.add_subplot(312)
@@ -411,18 +316,171 @@ if __name__ == '__main__':
             fig.clear()
             plt.close(fig)
 
-        # Get fit params
-        host_fit_paramnames = galaxy_fit.param_names
-
         # Save the host fit model
         host_model_row = galaxy_fit(xarr)
         host_model[i] = host_model_row
+
+    return host_model, host_fit_params
+
+
+def test_host_model(cutout, host_model, host_fit_params, cfg):
+
+    iter_flag = False
+
+    # get user config params needed
+    start_row = cfg['start_row']
+
+    # Step 1: find the single rows in the host model
+    # that are empty and fill them in with interpolation.
+    # first find all zero rows
+    zero_row_idxs = []
+    for r in range(start_row, host_model.shape[0]):
+        current_row = host_model[r]
+        # test for all zeros
+        if not current_row.any():
+            zero_row_idxs.append(r)
+
+    print('Empty rows:', zero_row_idxs)
+    # now check for zero rows which have filled rows on either side
+    rows_to_fill = []
+    for i, idx in enumerate(zero_row_idxs):
+        if ((zero_row_idxs[i-1] != (idx - 1))
+                and (zero_row_idxs[i+1] != (idx + 1))):
+            rows_to_fill.append(idx)
+
+    new_host_model = host_model
+    for row in rows_to_fill:
+        avg_row = (new_host_model[row-1] + new_host_model[row+1]) / 2
+        new_host_model[row] = avg_row
+    print('Filled in rows:', rows_to_fill)
+
+    # Step 2: Smoothing
+
+    # Step 3: Check residuals
+
+    return iter_flag, new_host_model
+
+
+if __name__ == '__main__':
+
+    # TODO list
+    print('\nTODO LIST:')
+    print('* NOTE: Automate the cropping later. You will need galaxy',
+          'half-light radius or the a & b elliptical axes from',
+          'something like SExtractor to measure the cutout size.')
+    print('* NOTE: Using default half-light radius initial guess.',
+          'This would be better if user provided.')
+    print('* NOTE: Using only Sersic/Gaussian profile to fit galaxy.',
+          'This really should be a model profile convolved with',
+          'lambda dependent PSF. Convolve Moffat for SN with PSF too.')
+    print('* NOTE: approx host galaxy position used here for masking.',
+          'This needs to come from the user.')
+    print('TODO: write code to handle case where host galaxy is also',
+          'contaminated by another galaxy spectrum (typically only a part',
+          'of the host spec will be covered by the other spectrum).')
+    print('* NOTE: using the max val in the cutout as the amplitude',
+          'as the initial guess. Should work in most cases.')
+    print('* NOTE: SN 1D spectrum is just collapsing the 2D residuals.',
+          'It calls onedutils which does the simple sum.',
+          'This should use something like the Horne86 optimal extraction.')
+    print('* NOTE: try stacking rows for the harder cases.')
+    print('* NOTE: iterate with constraints on fit params.',
+          'Also try smoothing host model before next iteration.')
+    print('* NOTE: Check WCS and x,y coords returned by above func in ds9.')
+    print('* NOTE: Figure out how to handle ERR and DQ extensions.')
+    print('\n')
+
+    # ==========================
+    # Get configuration
+    config_flname = 'user_config_1dhostsub.yaml'
+    with open(config_flname, 'r') as fh:
+        cfg = yaml.safe_load(fh)
+
+    print('Received the following configuration from the user:')
+    pprint(cfg)
+    # ==========================
+
+    fname = cfg['fname']
+    print('Working on file:', fname)
+
+    # Convert SN and host locations from user to x,y
+    # Get user coords
+    snra = cfg['snra']
+    sndec = cfg['sndec']
+    hostra = cfg['hostra']
+    hostdec = cfg['hostdec']
+    xsn, ysn, xhost, yhost = get_sn_host_loc(fname, snra, sndec,
+                                             hostra, hostdec)
+
+    # Read in input spectra
+    host_spec_fname = datadir + cfg['host_spec_fname']
+    sn_spec_fname = datadir + cfg['sn_spec_fname']
+    host_input_wav, host_input_flux = np.loadtxt(host_spec_fname, unpack=True)
+    sn_input_wav, sn_input_flux = np.loadtxt(sn_spec_fname, unpack=True)
+
+    # Load image
+    sciextnum = cfg['sciextnum']
+    prismimg = fits.open(datadir + fname)
+    prismdata = prismimg[sciextnum].data
+
+    # convert to integer pixels
+    row = int(ysn)
+    col = int(xsn)
+    # print('SN row:', row, 'col:', col)
+
+    # get cutout size config
+    cutoutsize_x = cfg['cutoutsize_x']
+    cutoutsize_y_lo = cfg['cutoutsize_y_lo']
+    cutoutsize_y_hi = cfg['cutoutsize_y_hi']
+
+    # Cutout centered on SN loc
+    cutout = prismdata[row - cutoutsize_y_lo: row + cutoutsize_y_hi,
+                       col - int(cutoutsize_x/2): col + int(cutoutsize_x/2)]
+
+    # Get host location within cutout
+    cutout_host_x = int(cutoutsize_x/2) + int(int(xhost) - col)
+
+    # plot
+    if cfg['showcutoutplot']:
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+        cax = ax.imshow(np.log10(cutout), origin='lower', vmin=1.5, vmax=2.5)
+        cbar = fig.colorbar(cax)
+        cbar.set_label('log(pix val)')
+        plt.show()
+        fig.savefig(fname.replace('.fits', '_cutout.png'), dpi=200,
+                    bbox_inches='tight')
+        fig.clear()
+        plt.close(fig)
+
+    # ==========================
+    # Now fit the profile
+    xarr = np.arange(cutoutsize_x)
+
+    # Empty array for host model
+    host_model = np.zeros_like(cutout)
+
+    # Iterate and test
+    num_iter = 1
+    max_iter = cfg['max_iter']
+    while num_iter < max_iter:
+        print('Iteration:', num_iter)
+        host_model, host_fit_params = gen_host_model(cutout, cfg)
+        iter_flag, host_model = test_host_model(cutout, host_model,
+                                                host_fit_params, cfg)
+        if iter_flag:
+            num_iter += 1
+            continue
+        else:
+            break
+
+    print('\nDone in', num_iter, 'iterations.\n')
 
     # ==========================
     # Get the SN spectrum
     recovered_sn_2d = cutout - host_model
 
-    imghdr = prismimg[0].header
+    imghdr = prismimg[sciextnum].header
     wcs = WCS(imghdr)
     # WCS unused if coordtype is 'pix'.
     # The object X, Y are the center of the cutout
@@ -430,6 +488,10 @@ if __name__ == '__main__':
     obj_x = int(cutoutsize_x/2)
     obj_y = cutout.shape[0] - cutoutsize_y_hi
     # print(obj_x, obj_y)
+    # Extraction params from config
+    obj_one_sided_width = cfg['obj_one_sided_width']
+    start_wav = cfg['start_wav']
+    end_wav = cfg['end_wav']
     rs, re, cs, ce, specwav = oned_utils.get_bbox_rowcol(obj_x, obj_y, wcs,
                                                          obj_one_sided_width,
                                                          coordtype='pix',
@@ -451,16 +513,25 @@ if __name__ == '__main__':
     # these areas are in square meters
     roman_effarea = np.genfromtxt(prismdir + 'Roman_effarea_20201130.csv',
                                   dtype=None, names=True, delimiter=',')
-
     prism_effarea = roman_effarea['SNPrism'] * 1e4  # cm2
     prism_effarea_wave = roman_effarea['Wave'] * 1e4  # angstroms
 
-    # covert to physical units
+    # convert to physical units
+    expt = cfg['spec_img_exptime']
     sn_1d_spec_phys = oned_utils.convert_to_phys_units(spec2d, specwav, 'DN',
                                                        prism_effarea_wave,
                                                        prism_effarea,
                                                        subtract_bkg=False,
-                                                       spec_img_exptime=1000)
+                                                       spec_img_exptime=expt)
+
+    # also try showing what you'd get if you didn't subtract the host
+    spec2d_with_host = cutout[rs: re + 1, cs: ce + 1]
+    sn_1d_phys_host = oned_utils.convert_to_phys_units(spec2d_with_host,
+                                                       specwav, 'DN',
+                                                       prism_effarea_wave,
+                                                       prism_effarea,
+                                                       subtract_bkg=False,
+                                                       spec_img_exptime=expt)
 
     # ==========
     # Show all host subtraction
@@ -470,14 +541,14 @@ if __name__ == '__main__':
     ax2 = fig.add_subplot(132)
     ax3 = fig.add_subplot(133)
 
-    ax1.imshow(np.log10(cutout), origin='lower', vmin=0.5, vmax=2.5)
+    ax1.imshow(np.log10(cutout), origin='lower', vmin=1.5, vmax=2.5)
     ax1.set_title('SN + Host original image cutout')
 
-    ax2.imshow(np.log10(host_model), origin='lower', vmin=0.5, vmax=2.5)
+    ax2.imshow(np.log10(host_model), origin='lower', vmin=1.5, vmax=2.5)
     ax2.set_title('File: ' + fname + '\n' + 'Host model')
 
     ax3.imshow(np.log10(recovered_sn_2d), origin='lower',
-               vmin=0.5, vmax=2.5)
+               vmin=1.5, vmax=2.5)
     ax3.set_title('SN residual')
 
     fig.savefig(fname.replace('.fits', '_2dparamfit.png'),
@@ -507,7 +578,12 @@ if __name__ == '__main__':
     ax1.plot(sn_input_wav_microns, sn_input_flux, '-',
              color='mediumseagreen', label='Input SN spec')
 
-    ax1.legend(loc=0)
+    # Also plot the SN spectrum without host contamination subtracted
+    ax1.plot(specwav, sn_1d_phys_host, '-',
+             color='slategray', lw=1.5,
+             label='SN spec without host\n' + 'contam. subtracted')
+
+    ax1.legend(loc=0, fontsize=10)
 
     ax1.set_xlim(0.65, 2.0)
     ax1.set_ylim(0, 1.5e-19)

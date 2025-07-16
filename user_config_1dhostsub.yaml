@@ -34,7 +34,7 @@ cutoutsize_x: 100
 spec_img_exptime: 900  # seconds
 
 # Smooth before fitting
-applysmoothing: True
+applysmoothing: False
 
 # File name
 fname: 'test_prism_WFI_rollAngle000_dither0.fits'

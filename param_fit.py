@@ -197,21 +197,7 @@ def get_sn_host_loc(fname, snra, sndec, hostra, hostdec):
     return xsn, ysn, xhost, yhost
 
 
-def gen_host_model(cutout, cfg):
-
-    # ----- Get user config values needed
-    start_row = cfg['start_row']
-    # You can change end row here for diagnostic purposes
-    # The end_row should be set to the end of the cutout
-    # but this can be set to the start_row + some other
-    # number of rows that you'd like to see fits for
-    end_row = cutout.shape[0]  # start_row + 10  # cutout.shape[0]
-
-    # fit thresh
-    sigma_thresh = cfg['sigma_thresh']
-    numpix_fit_thresh = cfg['numpix_fit_thresh']
-
-    # ----- Masks
+def get_all_masks(cfg):
     # We actually need to create the masks first
     # mask the SN
     # Note that these indices are relative to the cutout indices.
@@ -228,6 +214,25 @@ def gen_host_model(cutout, cfg):
 
     combinedmask = np.union1d(sn_mask_idx, gal_mask_idx)
     # print('combined mask:', combinedmask)
+    return combinedmask, gal_mask_idx, sn_mask_idx
+
+
+def gen_host_model(cutout, cfg):
+
+    # ----- Get user config values needed
+    start_row = cfg['start_row']
+    # You can change end row here for diagnostic purposes
+    # The end_row should be set to the end of the cutout
+    # but this can be set to the start_row + some other
+    # number of rows that you'd like to see fits for
+    end_row = cutout.shape[0]  # start_row + 10  # cutout.shape[0]
+
+    # fit thresh
+    sigma_thresh = cfg['sigma_thresh']
+    numpix_fit_thresh = cfg['numpix_fit_thresh']
+
+    # ----- Masks
+    combinedmask, gal_mask_idx, sn_mask_idx = get_all_masks(cfg)
 
     # ----- loop over all rows
     host_fit_params = {}
@@ -354,7 +359,45 @@ def test_host_model(cutout, host_model, host_fit_params, cfg):
         new_host_model[row] = avg_row
     print('Filled in rows:', rows_to_fill)
 
-    # Step 2: Smoothing
+    # Step 2: Stack rows where two or more rows aren't fit
+    # Find contiguous zero row idxs in the host model
+    # Need to convert to boolean array first.
+    # This boolean array is True where the host model has a zero row.
+    zero_row_bool = np.zeros(host_model.shape[0], dtype=bool)
+    zero_row_bool[zero_row_idxs] = True
+    cont_zero_rows = get_contiguous_slices(zero_row_bool, min_length=2)
+    print('Contiguous zero row idxs. Tuple of (start, end):')
+    print(cont_zero_rows)
+
+    for j in range(len(cont_zero_rows)):
+        start, end = cont_zero_rows[j]
+        print('Start, end rows for stack:', start, end)
+        stack_row_idx = np.arange(start, end+1, dtype=int)
+        print(stack_row_idx)
+        all_rows_stack = cutout[stack_row_idx]
+        mean_stack = np.mean(all_rows_stack, axis=0)
+        print(mean_stack.shape)
+
+        # NOw fit to the stack and replace all zero rows
+        # in the host model with this fit
+        # We're going to force fit the mean stack regardless of the flag
+        combinedmask, gal_mask_idx, sn_mask_idx = get_all_masks(cfg)
+        gal_x_fit, gal_y_fit, gal_prep_flag = prep_fit(cfg, mean_stack, xarr,
+                                                       mask=sn_mask_idx)
+        galaxy_fit = fit_1d(gal_y_fit, gal_x_fit, xloc=cutout_host_x,
+                            model='moffat')
+
+        host_model[stack_row_idx] = galaxy_fit(xarr)
+
+        # Show stack, fit, and data that went into the stack
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+        ax.scatter(np.arange(len(mean_stack)), mean_stack, s=4, c='r')
+        ax.scatter(np.arange(len(mean_stack)),
+                   savgol_filter(mean_stack, window_length=4,
+                                 polyorder=2), s=6, c='b')
+        ax.plot(xarr, galaxy_fit(xarr), color='g')
+        plt.show()
 
     # Step 3: Check residuals
 
@@ -461,6 +504,7 @@ if __name__ == '__main__':
     host_model = np.zeros_like(cutout)
 
     # Iterate and test
+    """
     num_iter = 1
     max_iter = cfg['max_iter']
     while num_iter < max_iter:
@@ -473,8 +517,8 @@ if __name__ == '__main__':
             continue
         else:
             break
-
     print('\nDone in', num_iter, 'iterations.\n')
+    """
 
     # ==========================
     # Get the SN spectrum

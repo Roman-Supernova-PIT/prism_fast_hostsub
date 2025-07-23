@@ -2,6 +2,7 @@ import numpy as np
 from astropy.io import fits
 import matplotlib.pyplot as plt
 from astropy.modeling import models, fitting
+from astropy.convolution import convolve, Gaussian2DKernel
 import astropy
 from astropy.wcs import WCS
 from scipy.interpolate import griddata
@@ -58,7 +59,9 @@ def get_model_init(model, y_fit, x_fit, xloc):
         model_init = models.Moffat1D(amplitude=amplitude_init, x_0=x_0_init,
                                      gamma=gamma_init, alpha=alpha_init,
                                      fixed={'x_0': True},
-                                     bounds={'amplitude': (0, amplitude_init)})
+                                     bounds={'amplitude': (0, amplitude_init),
+                                             'gamma': (0, 10),
+                                             'alpha': (0, 10)})
 
     elif model == 'gauss':
 
@@ -219,6 +222,9 @@ def get_all_masks(cfg):
 
 def gen_host_model(cutout, cfg):
 
+    host_model_to_fit = 'moffat'
+    sn_model_to_fit = 'moffat'
+
     # ----- Get user config values needed
     start_row = cfg['start_row']
     # You can change end row here for diagnostic purposes
@@ -231,18 +237,22 @@ def gen_host_model(cutout, cfg):
     sigma_thresh = cfg['sigma_thresh']
     numpix_fit_thresh = cfg['numpix_fit_thresh']
 
+    # verbosity
+    verbose = cfg['verbose']
+
     # ----- Masks
     combinedmask, gal_mask_idx, sn_mask_idx = get_all_masks(cfg)
 
     # ----- loop over all rows
     host_fit_params = {}
+    host_fit_params['model'] = host_model_to_fit
 
     for i in range(start_row, end_row):
         # print('\nFitting row:', i)
         profile_pix = cutout[i]
 
         # ----- Apply a Savitsky-Golay filter to the data, if user requested
-        applysmoothing = cfg['applysmoothing']
+        applysmoothing = cfg['applysmoothingperrow']
         if applysmoothing:
             profile_pix = savgol_filter(profile_pix, window_length=5,
                                         polyorder=2)
@@ -256,8 +266,9 @@ def gen_host_model(cutout, cfg):
         res = get_contiguous_slices(pix_over_thresh,
                                     min_length=numpix_fit_thresh)
         if not res:
-            print('Row:', i, 'Too few pixels above',
-                  sigma_thresh, 'sigma to fit. Skipping.')
+            if verbose:
+                print('Row:', i, 'Too few pixels above',
+                      sigma_thresh, 'sigma to fit. Skipping.')
             continue
 
         # ------ Proceed to fitting
@@ -269,7 +280,7 @@ def gen_host_model(cutout, cfg):
         if not gal_prep_flag:
             continue
         galaxy_fit = fit_1d(gal_y_fit, gal_x_fit, xloc=cutout_host_x,
-                            model='moffat', row_idx=i)
+                            model=host_model_to_fit, row_idx=i)
 
         # Fit a moffat profile to the supernova "residual"
         residual_pix = profile_pix - galaxy_fit(xarr)
@@ -279,7 +290,7 @@ def gen_host_model(cutout, cfg):
                                                     mask=gal_mask_idx)
         if not sn_prep_flag:
             continue
-        moffat_fit = fit_1d(sn_y_fit, sn_x_fit, model='moffat')
+        moffat_fit = fit_1d(sn_y_fit, sn_x_fit, model=sn_model_to_fit)
 
         if cfg['showfit']:
             print('----------------')
@@ -325,22 +336,110 @@ def gen_host_model(cutout, cfg):
         host_model_row = galaxy_fit(xarr)
         host_model[i] = host_model_row
 
+        # Save individual fit params
+        host_fit_params['Row' + str(i) + '-amp'] = galaxy_fit.amplitude.value
+        # host_fit_params['Row' + str(i) + '-x0'] = galaxy_fit.x_0.value
+        host_fit_params['Row' + str(i) + '-gamma'] = galaxy_fit.gamma.value
+        host_fit_params['Row' + str(i) + '-alpha'] = galaxy_fit.alpha.value
+
     return host_model, host_fit_params
 
 
-def test_host_model(cutout, host_model, host_fit_params, cfg):
+def update_host_model(cutout, hmodel, hfit_par, cfg):
 
     iter_flag = False
 
     # get user config params needed
     start_row = cfg['start_row']
 
-    # Step 1: find the single rows in the host model
+    # ---------
+    # Step 1: Check fit params and smooth out host model
+    """
+    amplitude_arr = []
+    gamma_arr = []
+    alpha_arr = []
+    row_idx_arr = []
+    for r in range(start_row, hmodel.shape[0]):
+        try:
+            amplitude_arr.append(hfit_par['Row' + str(r) + '-amp'])
+            gamma_arr.append(hfit_par['Row' + str(r) + '-gamma'])
+            alpha_arr.append(hfit_par['Row' + str(r) + '-alpha'])
+            row_idx_arr.append(r)
+        except KeyError:
+            continue
+
+    row_idx_arr = np.array(row_idx_arr)
+    amplitude_arr = np.array(amplitude_arr)
+    gamma_arr = np.array(gamma_arr)
+    alpha_arr = np.array(alpha_arr)
+
+    # Fit a low-order polynomial to the fit params
+    # First mask values where we know there isn't host light
+    extrarowcutoff = 30
+    valid_idx = np.where(row_idx_arr < (start_row + 210 - extrarowcutoff))[0]
+    pamp, pamp_cov = np.polyfit(row_idx_arr[valid_idx],
+                                amplitude_arr[valid_idx],
+                                deg=1, cov=True)
+    pgamma, pgamma_cov = np.polyfit(row_idx_arr[valid_idx],
+                                    gamma_arr[valid_idx],
+                                    deg=3, cov=True)
+    palpha, palpha_cov = np.polyfit(row_idx_arr[valid_idx],
+                                    alpha_arr[valid_idx],
+                                    deg=3, cov=True)
+
+    # get the error on the polynomial fit
+    # these are the errors on the fit parameters
+    amp_err = np.sqrt(np.diag(pamp_cov))
+    gamma_err = np.sqrt(np.diag(pgamma_cov))
+    alpha_err = np.sqrt(np.diag(palpha_cov))
+
+    print(pamp)
+    print(pgamma)
+    print(palpha)
+    print(amp_err)
+    print(gamma_err)
+    print(alpha_err)
+
+    fig = plt.figure(figsize=(7, 3))
+    ax1 = fig.add_subplot(131)
+    ax2 = fig.add_subplot(132)
+    ax3 = fig.add_subplot(133)
+    # show the best fit params
+    ax1.plot(row_idx_arr, amplitude_arr, 'o', markersize=4, color='k')
+    ax1.set_title(hfit_par['model'] + '-Amplitude')
+    ax2.plot(row_idx_arr, gamma_arr, 'o', markersize=4, color='r')
+    ax2.set_title(hfit_par['model'] + '-Gamma')
+    ax3.plot(row_idx_arr, alpha_arr, 'o', markersize=4, color='b')
+    ax3.set_title(hfit_par['model'] + '-Alpha')
+    # show the fits
+    ax1.plot(row_idx_arr, np.polyval(pamp, row_idx_arr), color='gray')
+    ax2.plot(row_idx_arr, np.polyval(pgamma, row_idx_arr), color='gray')
+    ax3.plot(row_idx_arr, np.polyval(palpha, row_idx_arr), color='gray')
+
+    # also show error on fits # shaded area
+    ax1.fill_between(row_idx_arr, np.polyval(pamp, row_idx_arr) - amp_err,
+                     np.polyval(pamp, row_idx_arr) + amp_err,
+                     color='gray', alpha=0.5)
+    ax2.fill_between(row_idx_arr, np.polyval(pgamma, row_idx_arr) - gamma_err,
+                     np.polyval(pgamma, row_idx_arr) + gamma_err,
+                     color='gray', alpha=0.5)
+    ax3.fill_between(row_idx_arr, np.polyval(palpha, row_idx_arr) - alpha_err,
+                     np.polyval(palpha, row_idx_arr) + alpha_err,
+                     color='gray', alpha=0.5)
+
+    plt.show()
+
+    sys.exit(0)
+    """
+
+    # ---------
+    # Step 2: find the single rows in the host model
     # that are empty and fill them in with interpolation.
     # first find all zero rows
+    print('\nFilling in single empty rows in the host model.')
     zero_row_idxs = []
-    for r in range(start_row, host_model.shape[0]):
-        current_row = host_model[r]
+    for r in range(start_row, hmodel.shape[0]):
+        current_row = hmodel[r]
         # test for all zeros
         if not current_row.any():
             zero_row_idxs.append(r)
@@ -353,55 +452,74 @@ def test_host_model(cutout, host_model, host_fit_params, cfg):
                 and (zero_row_idxs[i+1] != (idx + 1))):
             rows_to_fill.append(idx)
 
-    new_host_model = host_model
     for row in rows_to_fill:
-        avg_row = (new_host_model[row-1] + new_host_model[row+1]) / 2
-        new_host_model[row] = avg_row
+        avg_row = (hmodel[row-1] + hmodel[row+1]) / 2
+        hmodel[row] = avg_row
     print('Filled in rows:', rows_to_fill)
+    print('\n')
 
-    # Step 2: Stack rows where two or more rows aren't fit
+    # ---------
+    # Step 3: Stack rows where two or more rows aren't fit
     # Find contiguous zero row idxs in the host model
     # Need to convert to boolean array first.
     # This boolean array is True where the host model has a zero row.
-    zero_row_bool = np.zeros(host_model.shape[0], dtype=bool)
+    print('\nStacking contiguous zero rows in the host model.')
+    zero_row_bool = np.zeros(hmodel.shape[0], dtype=bool)
     zero_row_bool[zero_row_idxs] = True
     cont_zero_rows = get_contiguous_slices(zero_row_bool, min_length=2)
-    print('Contiguous zero row idxs. Tuple of (start, end):')
+    print('Contiguous zero row idxs. Tuples of (start, end):')
     print(cont_zero_rows)
 
     for j in range(len(cont_zero_rows)):
         start, end = cont_zero_rows[j]
-        print('Start, end rows for stack:', start, end)
         stack_row_idx = np.arange(start, end+1, dtype=int)
-        print(stack_row_idx)
+
+        # Skip if rows to stack aren't expected to have host light
+        if start > (start_row + 210):
+            continue
+
+        print('Start, end rows for stack:', start, end)
+
+        remove_rows = np.where(stack_row_idx > (start_row + 210))[0]
+        if remove_rows.size > 0:
+            print('Removing rows that are not expected',
+                  'to have host light.')
+            stack_row_idx = np.delete(stack_row_idx, remove_rows)
+            print('New stack row idxs:', stack_row_idx)
+
+        # Mean stack
         all_rows_stack = cutout[stack_row_idx]
         mean_stack = np.mean(all_rows_stack, axis=0)
-        print(mean_stack.shape)
 
         # NOw fit to the stack and replace all zero rows
         # in the host model with this fit
-        # We're going to force fit the mean stack regardless of the flag
+        # We're going to force fit the mean stack regardless of the prep flag
         combinedmask, gal_mask_idx, sn_mask_idx = get_all_masks(cfg)
         gal_x_fit, gal_y_fit, gal_prep_flag = prep_fit(cfg, mean_stack, xarr,
                                                        mask=sn_mask_idx)
         galaxy_fit = fit_1d(gal_y_fit, gal_x_fit, xloc=cutout_host_x,
                             model='moffat')
 
-        host_model[stack_row_idx] = galaxy_fit(xarr)
+        hmodel[stack_row_idx] = galaxy_fit(xarr)
 
         # Show stack, fit, and data that went into the stack
-        fig = plt.figure()
-        ax = fig.add_subplot(111)
-        ax.scatter(np.arange(len(mean_stack)), mean_stack, s=4, c='r')
-        ax.scatter(np.arange(len(mean_stack)),
-                   savgol_filter(mean_stack, window_length=4,
-                                 polyorder=2), s=6, c='b')
-        ax.plot(xarr, galaxy_fit(xarr), color='g')
-        plt.show()
+        if cfg['show_stack_fit']:
+            fig = plt.figure()
+            ax = fig.add_subplot(111)
+            ax.scatter(np.arange(len(mean_stack)), mean_stack, s=4, c='r')
+            ax.scatter(np.arange(len(mean_stack)),
+                       savgol_filter(mean_stack, window_length=4,
+                                     polyorder=2), s=6, c='b')
+            ax.plot(xarr, galaxy_fit(xarr), color='g')
+            plt.show()
 
-    # Step 3: Check residuals
+    # ---------
+    # Smooth out the host model
+    print('\nSmoothing out the host model.')
+    gauss2d = Gaussian2DKernel(x_stddev=0.25, y_stddev=3)
+    smooth_hmodel = convolve(hmodel, gauss2d)
 
-    return iter_flag, new_host_model
+    return iter_flag, smooth_hmodel, hfit_par
 
 
 if __name__ == '__main__':
@@ -431,6 +549,7 @@ if __name__ == '__main__':
           'Also try smoothing host model before next iteration.')
     print('* NOTE: Check WCS and x,y coords returned by above func in ds9.')
     print('* NOTE: Figure out how to handle ERR and DQ extensions.')
+    print('* NOTE: Make sure flux is conserved when smoothing with gauss2d')
     print('\n')
 
     # ==========================
@@ -444,7 +563,7 @@ if __name__ == '__main__':
     # ==========================
 
     fname = cfg['fname']
-    print('Working on file:', fname)
+    print('\nWorking on file:', fname)
 
     # Convert SN and host locations from user to x,y
     # Get user coords
@@ -503,6 +622,12 @@ if __name__ == '__main__':
     # Empty array for host model
     host_model = np.zeros_like(cutout)
 
+    host_model, host_fit_params = gen_host_model(cutout, cfg)
+    iter_flag, host_model, host_fit_params = update_host_model(cutout,
+                                                               host_model,
+                                                               host_fit_params,
+                                                               cfg)
+
     # Iterate and test
     """
     num_iter = 1
@@ -510,8 +635,8 @@ if __name__ == '__main__':
     while num_iter < max_iter:
         print('Iteration:', num_iter)
         host_model, host_fit_params = gen_host_model(cutout, cfg)
-        iter_flag, host_model = test_host_model(cutout, host_model,
-                                                host_fit_params, cfg)
+        iter_flag, host_model = update_host_model(cutout, host_model,
+                                                  host_fit_params, cfg)
         if iter_flag:
             num_iter += 1
             continue

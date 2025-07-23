@@ -2,6 +2,7 @@
 # Plotting
 showcutoutplot: False
 showfit: False
+show_stack_fit: False
 
 # use this flag to not mask anything
 # we need this if masking one object would also mask the other
@@ -16,11 +17,11 @@ numpix_fit_thresh: 5
 sigma_thresh: 2.0
 
 # max iterations for fitting
-max_iter: 10
+# max_iter: 10
 
 # user guess for starting row at which real signal
 # for the host galaxy starts
-start_row: 50
+start_row: 30
 
 # Pads for masking SN and host
 galmaskpad: 6
@@ -34,10 +35,10 @@ cutoutsize_x: 100
 spec_img_exptime: 900  # seconds
 
 # Smooth before fitting
-applysmoothing: False
+applysmoothingperrow: False
 
 # File name
-fname: 'test_prism_WFI_rollAngle000_dither0.fits'
+fname: 'test_prism_WFI_rollAngle090_dither0.fits'
 
 # Extension numbers in FITS file
 sciextnum: 1
@@ -53,7 +54,7 @@ host_spec_fname: 'lfgal.txt'
 sn_spec_fname: 'lfnana.txt'
 
 # For 1D extraction
-obj_one_sided_width: 3
+obj_one_sided_width: 4
 
 # starting and ending wavelengths for x1d
 start_wav: 0.7

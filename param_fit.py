@@ -349,6 +349,9 @@ def update_host_model(cutout, hmodel, hfit_par, cfg):
 
     iter_flag = False
 
+    # verbosity
+    verbose = cfg['verbose']
+
     # get user config params needed
     start_row = cfg['start_row']
 
@@ -436,7 +439,6 @@ def update_host_model(cutout, hmodel, hfit_par, cfg):
     # Step 2: find the single rows in the host model
     # that are empty and fill them in with interpolation.
     # first find all zero rows
-    print('\nFilling in single empty rows in the host model.')
     zero_row_idxs = []
     for r in range(start_row, hmodel.shape[0]):
         current_row = hmodel[r]
@@ -444,7 +446,10 @@ def update_host_model(cutout, hmodel, hfit_par, cfg):
         if not current_row.any():
             zero_row_idxs.append(r)
 
-    print('Empty rows:', zero_row_idxs)
+    if verbose:
+        print('\nFilling in single empty rows in the host model.')
+        print('Empty rows:', zero_row_idxs)
+
     # now check for zero rows which have filled rows on either side
     rows_to_fill = []
     for i, idx in enumerate(zero_row_idxs):
@@ -455,20 +460,24 @@ def update_host_model(cutout, hmodel, hfit_par, cfg):
     for row in rows_to_fill:
         avg_row = (hmodel[row-1] + hmodel[row+1]) / 2
         hmodel[row] = avg_row
-    print('Filled in rows:', rows_to_fill)
-    print('\n')
+
+    if verbose:
+        print('Filled in rows:', rows_to_fill)
+        print('\n')
 
     # ---------
     # Step 3: Stack rows where two or more rows aren't fit
     # Find contiguous zero row idxs in the host model
     # Need to convert to boolean array first.
     # This boolean array is True where the host model has a zero row.
-    print('\nStacking contiguous zero rows in the host model.')
     zero_row_bool = np.zeros(hmodel.shape[0], dtype=bool)
     zero_row_bool[zero_row_idxs] = True
     cont_zero_rows = get_contiguous_slices(zero_row_bool, min_length=2)
-    print('Contiguous zero row idxs. Tuples of (start, end):')
-    print(cont_zero_rows)
+
+    if verbose:
+        print('\nStacking contiguous zero rows in the host model.')
+        print('Contiguous zero row idxs. Tuples of (start, end):')
+        print(cont_zero_rows)
 
     for j in range(len(cont_zero_rows)):
         start, end = cont_zero_rows[j]
@@ -478,14 +487,23 @@ def update_host_model(cutout, hmodel, hfit_par, cfg):
         if start > (start_row + 210):
             continue
 
-        print('Start, end rows for stack:', start, end)
+        if verbose:
+            print('Start, end rows for stack:', start, end)
 
         remove_rows = np.where(stack_row_idx > (start_row + 210))[0]
         if remove_rows.size > 0:
-            print('Removing rows that are not expected',
-                  'to have host light.')
             stack_row_idx = np.delete(stack_row_idx, remove_rows)
-            print('New stack row idxs:', stack_row_idx)
+            if verbose:
+                print('Removing rows that are not expected',
+                      'to have host light.')
+                print('New stack row idxs:', stack_row_idx)
+
+        # If the number of rows to stack exceeds some number
+        # over which the PSF would be expected to change a lot,
+        # then we break up the stack into multiple parts.
+        if len(stack_row_idx) > 10:
+            
+
 
         # Mean stack
         all_rows_stack = cutout[stack_row_idx]
@@ -506,20 +524,24 @@ def update_host_model(cutout, hmodel, hfit_par, cfg):
         if cfg['show_stack_fit']:
             fig = plt.figure()
             ax = fig.add_subplot(111)
-            ax.scatter(np.arange(len(mean_stack)), mean_stack, s=4, c='r')
+            ax.scatter(np.arange(len(mean_stack)), mean_stack,
+                       s=4, c='r', label='Stacked data')
             ax.scatter(np.arange(len(mean_stack)),
                        savgol_filter(mean_stack, window_length=4,
-                                     polyorder=2), s=6, c='b')
-            ax.plot(xarr, galaxy_fit(xarr), color='g')
+                                     polyorder=2),
+                       s=6, c='b', label='SG smoothed data')
+            ax.plot(xarr, galaxy_fit(xarr), color='g', label='Fit result')
+            ax.legend(loc=0)
             plt.show()
 
     # ---------
     # Smooth out the host model
-    print('\nSmoothing out the host model.')
-    gauss2d = Gaussian2DKernel(x_stddev=0.25, y_stddev=3)
-    smooth_hmodel = convolve(hmodel, gauss2d)
+    for col in hmodel.shape[1]:
+        current_col = hmodel[:, col]
+        newcol = savgol_filter(current_col, window_length=5, polyorder=3)
+        hmodel[:, col] = newcol
 
-    return iter_flag, smooth_hmodel, hfit_par
+    return iter_flag, hmodel, hfit_par
 
 
 if __name__ == '__main__':
@@ -550,6 +572,10 @@ if __name__ == '__main__':
     print('* NOTE: Check WCS and x,y coords returned by above func in ds9.')
     print('* NOTE: Figure out how to handle ERR and DQ extensions.')
     print('* NOTE: Make sure flux is conserved when smoothing with gauss2d')
+    print('* NOTE: Show resid hist with SN masked.')
+    print('* NOTE: SavGol filter going vertically.')
+    print('* NOTE: Try grid of sims.')
+    print('* NOTE: Move to testing with HST data once above items are done.')
     print('\n')
 
     # ==========================
@@ -778,3 +804,11 @@ if __name__ == '__main__':
     prismimg.close()
 
     sys.exit(0)
+
+# ======
+# Talk to nimish about spec-z catalogs. about sources of spec-z, structuring your catalog, and creating a database
+# Talk to Ori or Gisella about resources required for the spec-z repo and photo-z p(z) curves
+#
+# Send reminder about PZ WG meetings to PIT general and spec channel (esp Rebekah and Russell)
+# Send overleaf doc to Russell
+

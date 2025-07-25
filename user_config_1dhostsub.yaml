@@ -38,14 +38,14 @@ spec_img_exptime: 900  # seconds
 applysmoothingperrow: False
 
 # File name
-fname: 'test_prism_WFI_rollAngle010_dither0.fits'
+fname: 'test_prism_WFI_rollAngle030_dither0.fits'
 
 # Extension numbers in FITS file
 sciextnum: 1
 
 # Coordinates
-snra: 7.60222713
-sndec: -44.79127248
+snra: 7.6022277
+sndec: -44.7897423
 hostra: 7.602432752
 hostdec: -44.78963685
 

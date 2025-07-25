@@ -2,7 +2,6 @@ import numpy as np
 from astropy.io import fits
 import matplotlib.pyplot as plt
 from astropy.modeling import models, fitting
-from astropy.convolution import convolve, Gaussian2DKernel
 import astropy
 from astropy.wcs import WCS
 from scipy.interpolate import griddata
@@ -136,17 +135,25 @@ def fit_1d(y_fit, x_fit, xloc=50, model=None, row_idx=None):
     fit = fitting.TRFLSQFitter()
     try:
         fitted_model = fit(model_init, x_fit, y_fit)
-    except astropy.modeling.fitting.NonFiniteValueError:
+    except (ValueError, astropy.modeling.fitting.NonFiniteValueError) as e:
+        print('\nEncountered exception:', e)
         print(x_fit)
         print(y_fit)
+        print('x loc:', xloc)
+        print('Row index:', row_idx)
+        print('\n')
 
-        fig = plt.figure()
-        ax = fig.add_subplot(111)
-        ax.plot(x_fit, y_fit, 'o', markersize=4, color='k')
-        ax.set_title('Fitting failed due to non-finite values.\n' +
-                     'Row index: ' + str(row_idx))
-        plt.show()
-        sys.exit(1)
+        # fig = plt.figure()
+        # ax = fig.add_subplot(111)
+        # ax.plot(x_fit, y_fit, 'o', markersize=4, color='k')
+        # ax.set_title('Fitting failed due to non-finite values.\n' +
+        #              'Row index: ' + str(row_idx))
+        # plt.show()
+
+        # Return a NoneType model that we will check for
+        # in the model gen func and skip.
+        fitted_model = None
+        # sys.exit(1)
 
     return fitted_model
 
@@ -281,6 +288,8 @@ def gen_host_model(cutout, cfg):
             continue
         galaxy_fit = fit_1d(gal_y_fit, gal_x_fit, xloc=cutout_host_x,
                             model=host_model_to_fit, row_idx=i)
+        if galaxy_fit is None:
+            continue
 
         # Fit a moffat profile to the supernova "residual"
         residual_pix = profile_pix - galaxy_fit(xarr)
@@ -290,7 +299,10 @@ def gen_host_model(cutout, cfg):
                                                     mask=gal_mask_idx)
         if not sn_prep_flag:
             continue
-        moffat_fit = fit_1d(sn_y_fit, sn_x_fit, model=sn_model_to_fit)
+        moffat_fit = fit_1d(sn_y_fit, sn_x_fit,
+                            model=sn_model_to_fit, row_idx=i)
+        if moffat_fit is None:
+            continue
 
         if cfg['showfit']:
             print('----------------')
@@ -501,47 +513,81 @@ def update_host_model(cutout, hmodel, hfit_par, cfg):
         # If the number of rows to stack exceeds some number
         # over which the PSF would be expected to change a lot,
         # then we break up the stack into multiple parts.
-        if len(stack_row_idx) > 10:
-            
-
-
-        # Mean stack
-        all_rows_stack = cutout[stack_row_idx]
-        mean_stack = np.mean(all_rows_stack, axis=0)
-
-        # NOw fit to the stack and replace all zero rows
-        # in the host model with this fit
-        # We're going to force fit the mean stack regardless of the prep flag
-        combinedmask, gal_mask_idx, sn_mask_idx = get_all_masks(cfg)
-        gal_x_fit, gal_y_fit, gal_prep_flag = prep_fit(cfg, mean_stack, xarr,
-                                                       mask=sn_mask_idx)
-        galaxy_fit = fit_1d(gal_y_fit, gal_x_fit, xloc=cutout_host_x,
-                            model='moffat')
-
-        hmodel[stack_row_idx] = galaxy_fit(xarr)
-
-        # Show stack, fit, and data that went into the stack
-        if cfg['show_stack_fit']:
-            fig = plt.figure()
-            ax = fig.add_subplot(111)
-            ax.scatter(np.arange(len(mean_stack)), mean_stack,
-                       s=4, c='r', label='Stacked data')
-            ax.scatter(np.arange(len(mean_stack)),
-                       savgol_filter(mean_stack, window_length=4,
-                                     polyorder=2),
-                       s=6, c='b', label='SG smoothed data')
-            ax.plot(xarr, galaxy_fit(xarr), color='g', label='Fit result')
-            ax.legend(loc=0)
-            plt.show()
+        stack_row_idx_list = split_indices(stack_row_idx, max_length=8)
+        if len(stack_row_idx_list) > 1:
+            for st in stack_row_idx_list:
+                galaxy_fit, stack_res = fit_stack(cutout, st)
+                hmodel[st] = galaxy_fit(xarr)
+        else:
+            galaxy_fit, stack_res = fit_stack(cutout, stack_row_idx)
+            hmodel[stack_row_idx] = galaxy_fit(xarr)
 
     # ---------
     # Smooth out the host model
-    for col in hmodel.shape[1]:
+    for col in range(hmodel.shape[1]):
         current_col = hmodel[:, col]
-        newcol = savgol_filter(current_col, window_length=5, polyorder=3)
+        newcol = savgol_filter(current_col, window_length=8, polyorder=3)
         hmodel[:, col] = newcol
 
     return iter_flag, hmodel, hfit_par
+
+
+def fit_stack(cutout, st):
+    # Mean stack
+    all_rows_stack = cutout[st]
+    mean_stack = np.mean(all_rows_stack, axis=0)
+
+    # NOw fit to the stack and replace all zero rows
+    # in the host model with this fit
+    # We're going to force fit the mean stack regardless of the prep flag
+    combinedmask, gal_mask_idx, sn_mask_idx = get_all_masks(cfg)
+    gal_x_fit, gal_y_fit, gal_prep_flag = prep_fit(cfg, mean_stack, xarr,
+                                                   mask=sn_mask_idx)
+    gfit = fit_1d(gal_y_fit, gal_x_fit, xloc=cutout_host_x,
+                  model='moffat')
+
+    # Show stack, fit, and data that went into the stack
+    if cfg['show_stack_fit']:
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+        ax.scatter(np.arange(len(mean_stack)), mean_stack,
+                   s=4, c='r', label='Stacked data')
+        ax.scatter(np.arange(len(mean_stack)),
+                   savgol_filter(mean_stack, window_length=4,
+                                 polyorder=2),
+                   s=6, c='b', label='SG smoothed data')
+        ax.plot(xarr, gfit(xarr), color='g', label='Fit result')
+        ax.legend(loc=0)
+        plt.show()
+
+    return gfit, mean_stack
+
+
+def split_indices(indices, max_length):
+    """
+    Splits a continuous array of indices into
+    sub-arrays of length <= max_length.
+
+    Parameters:
+        indices (array-like): Continuous array of indices.
+        max_length (int): Maximum allowed length for each sub-array.
+
+    Returns:
+        list of np.ndarray: List of sub-arrays,
+        each with length <= max_length.
+    """
+    indices = np.asarray(indices)
+    n = len(indices)
+    if n <= max_length:
+        sub_arrays = [indices]
+    else:
+        sub_arrays = []
+        for i in range(0, n, max_length):
+            sub = indices[i:i+max_length]
+            if len(sub) <= max_length:
+                sub_arrays.append(sub)
+
+    return sub_arrays
 
 
 if __name__ == '__main__':
@@ -559,21 +605,18 @@ if __name__ == '__main__':
     print('* NOTE: approx host galaxy position used here for masking.',
           'This needs to come from the user.')
     print('TODO: write code to handle case where host galaxy is also',
-          'contaminated by another galaxy spectrum (typically only a part',
+          'contaminated by another galaxy spectrum (only a part',
           'of the host spec will be covered by the other spectrum).')
     print('* NOTE: using the max val in the cutout as the amplitude',
           'as the initial guess. Should work in most cases.')
     print('* NOTE: SN 1D spectrum is just collapsing the 2D residuals.',
           'It calls onedutils which does the simple sum.',
           'This should use something like the Horne86 optimal extraction.')
-    print('* NOTE: try stacking rows for the harder cases.')
     print('* NOTE: iterate with constraints on fit params.',
           'Also try smoothing host model before next iteration.')
     print('* NOTE: Check WCS and x,y coords returned by above func in ds9.')
     print('* NOTE: Figure out how to handle ERR and DQ extensions.')
-    print('* NOTE: Make sure flux is conserved when smoothing with gauss2d')
     print('* NOTE: Show resid hist with SN masked.')
-    print('* NOTE: SavGol filter going vertically.')
     print('* NOTE: Try grid of sims.')
     print('* NOTE: Move to testing with HST data once above items are done.')
     print('\n')
@@ -692,9 +735,9 @@ if __name__ == '__main__':
                                                          coordtype='pix',
                                                          start_wav=start_wav,
                                                          end_wav=end_wav)
-
-    print('Row start:', rs, 'Row end:', re)
-    print('Col start:', cs, 'Col end:', ce)
+    # print('\n1D-Extraction params:')
+    # print('Row start:', rs, 'Row end:', re)
+    # print('Col start:', cs, 'Col end:', ce)
     # print('Wavelengths:', specwav)
     # print(specwav.shape)
 
@@ -804,11 +847,3 @@ if __name__ == '__main__':
     prismimg.close()
 
     sys.exit(0)
-
-# ======
-# Talk to nimish about spec-z catalogs. about sources of spec-z, structuring your catalog, and creating a database
-# Talk to Ori or Gisella about resources required for the spec-z repo and photo-z p(z) curves
-#
-# Send reminder about PZ WG meetings to PIT general and spec channel (esp Rebekah and Russell)
-# Send overleaf doc to Russell
-

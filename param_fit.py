@@ -215,8 +215,8 @@ def get_all_masks(cfg):
     # mask out hte central pixels
     snmaskpad = cfg['snmaskpad']
     galmaskpad = cfg['galmaskpad']
-    sn_mask_idx = np.arange(int(cutoutsize_x/2) - snmaskpad,
-                            int(cutoutsize_x/2) + snmaskpad)
+    sn_mask_idx = np.arange(int(cs_x/2) - snmaskpad,
+                            int(cs_x/2) + snmaskpad)
     # mask the galaxy
     # print('Host cutout center idx:', cutout_host_x)
     gal_mask_idx = np.arange(cutout_host_x - galmaskpad,
@@ -631,122 +631,6 @@ if __name__ == '__main__':
     pprint(cfg)
     # ==========================
 
-    fname = cfg['fname']
-    print('\nWorking on file:', fname)
-
-    # Convert SN and host locations from user to x,y
-    # Get user coords
-    snra = cfg['snra']
-    sndec = cfg['sndec']
-    hostra = cfg['hostra']
-    hostdec = cfg['hostdec']
-    xsn, ysn, xhost, yhost = get_sn_host_loc(fname, snra, sndec,
-                                             hostra, hostdec)
-
-    # Read in input spectra
-    host_spec_fname = datadir + cfg['host_spec_fname']
-    sn_spec_fname = datadir + cfg['sn_spec_fname']
-    host_input_wav, host_input_flux = np.loadtxt(host_spec_fname, unpack=True)
-    sn_input_wav, sn_input_flux = np.loadtxt(sn_spec_fname, unpack=True)
-
-    # Load image
-    sciextnum = cfg['sciextnum']
-    prismimg = fits.open(datadir + fname)
-    prismdata = prismimg[sciextnum].data
-
-    # convert to integer pixels
-    row = int(ysn)
-    col = int(xsn)
-    # print('SN row:', row, 'col:', col)
-
-    # get cutout size config
-    cutoutsize_x = cfg['cutoutsize_x']
-    cutoutsize_y_lo = cfg['cutoutsize_y_lo']
-    cutoutsize_y_hi = cfg['cutoutsize_y_hi']
-
-    # Cutout centered on SN loc
-    cutout = prismdata[row - cutoutsize_y_lo: row + cutoutsize_y_hi,
-                       col - int(cutoutsize_x/2): col + int(cutoutsize_x/2)]
-
-    # Get host location within cutout
-    cutout_host_x = int(cutoutsize_x/2) + int(int(xhost) - col)
-
-    # plot
-    if cfg['showcutoutplot']:
-        fig = plt.figure()
-        ax = fig.add_subplot(111)
-        cax = ax.imshow(np.log10(cutout), origin='lower', vmin=1.5, vmax=2.5)
-        cbar = fig.colorbar(cax)
-        cbar.set_label('log(pix val)')
-        plt.show()
-        fig.savefig(fname.replace('.fits', '_cutout.png'), dpi=200,
-                    bbox_inches='tight')
-        fig.clear()
-        plt.close(fig)
-
-    # ==========================
-    # Now fit the profile
-    xarr = np.arange(cutoutsize_x)
-
-    # Empty array for host model
-    host_model = np.zeros_like(cutout)
-
-    host_model, host_fit_params = gen_host_model(cutout, cfg)
-    iter_flag, host_model, host_fit_params = update_host_model(cutout,
-                                                               host_model,
-                                                               host_fit_params,
-                                                               cfg)
-
-    # Iterate and test
-    """
-    num_iter = 1
-    max_iter = cfg['max_iter']
-    while num_iter < max_iter:
-        print('Iteration:', num_iter)
-        host_model, host_fit_params = gen_host_model(cutout, cfg)
-        iter_flag, host_model = update_host_model(cutout, host_model,
-                                                  host_fit_params, cfg)
-        if iter_flag:
-            num_iter += 1
-            continue
-        else:
-            break
-    print('\nDone in', num_iter, 'iterations.\n')
-    """
-
-    # ==========================
-    # Get the SN spectrum
-    recovered_sn_2d = cutout - host_model
-
-    imghdr = prismimg[sciextnum].header
-    wcs = WCS(imghdr)
-    # WCS unused if coordtype is 'pix'.
-    # The object X, Y are the center of the cutout
-    # and the 1.55 micron row index.
-    obj_x = int(cutoutsize_x/2)
-    obj_y = cutout.shape[0] - cutoutsize_y_hi
-    # print(obj_x, obj_y)
-    # Extraction params from config
-    obj_one_sided_width = cfg['obj_one_sided_width']
-    start_wav = cfg['start_wav']
-    end_wav = cfg['end_wav']
-    rs, re, cs, ce, specwav = oned_utils.get_bbox_rowcol(obj_x, obj_y, wcs,
-                                                         obj_one_sided_width,
-                                                         coordtype='pix',
-                                                         start_wav=start_wav,
-                                                         end_wav=end_wav)
-    # print('\n1D-Extraction params:')
-    # print('Row start:', rs, 'Row end:', re)
-    # print('Col start:', cs, 'Col end:', ce)
-    # print('Wavelengths:', specwav)
-    # print(specwav.shape)
-
-    # Collapse to 1D
-    # Since we know the location of the SN, we will just
-    # use a few pixels around it.
-    spec2d = recovered_sn_2d[rs: re + 1, cs: ce + 1]
-    sn_1d_spec = np.nanmean(spec2d, axis=1)
-
     # Read in the effective area curve for the prism
     # these areas are in square meters
     roman_effarea = np.genfromtxt(prismdir + 'Roman_effarea_20201130.csv',
@@ -754,96 +638,219 @@ if __name__ == '__main__':
     prism_effarea = roman_effarea['SNPrism'] * 1e4  # cm2
     prism_effarea_wave = roman_effarea['Wave'] * 1e4  # angstroms
 
-    # convert to physical units
-    expt = cfg['spec_img_exptime']
-    sn_1d_spec_phys = oned_utils.convert_to_phys_units(spec2d, specwav, 'DN',
-                                                       prism_effarea_wave,
-                                                       prism_effarea,
-                                                       subtract_bkg=False,
-                                                       spec_img_exptime=expt)
+    # Read in input spectra
+    # We assume that the host and SN input spectra are the same
+    # for the entire file name list provided by the user.
+    host_spec_fname = datadir + cfg['host_spec_fname']
+    sn_spec_fname = datadir + cfg['sn_spec_fname']
+    host_input_wav, host_input_flux = np.loadtxt(host_spec_fname, unpack=True)
+    sn_input_wav, sn_input_flux = np.loadtxt(sn_spec_fname, unpack=True)
 
-    # also try showing what you'd get if you didn't subtract the host
-    spec2d_with_host = cutout[rs: re + 1, cs: ce + 1]
-    sn_1d_phys_host = oned_utils.convert_to_phys_units(spec2d_with_host,
-                                                       specwav, 'DN',
-                                                       prism_effarea_wave,
-                                                       prism_effarea,
-                                                       subtract_bkg=False,
-                                                       spec_img_exptime=expt)
+    fname_list = cfg['fname']
+    for fname in fname_list:
+        print('\nWorking on file:', fname)
 
-    # ==========
-    # Show all host subtraction
-    fig = plt.figure(figsize=(6, 6))
+        # Convert SN and host locations from user to x,y
+        # Get user coords
+        snra = cfg['snra']
+        sndec = cfg['sndec']
+        hostra = cfg['hostra']
+        hostdec = cfg['hostdec']
+        xsn, ysn, xhost, yhost = get_sn_host_loc(fname, snra, sndec,
+                                                 hostra, hostdec)
 
-    ax1 = fig.add_subplot(131)
-    ax2 = fig.add_subplot(132)
-    ax3 = fig.add_subplot(133)
+        # Load image
+        sciextnum = cfg['sciextnum']
+        prismimg = fits.open(datadir + fname)
+        prismdata = prismimg[sciextnum].data
 
-    ax1.imshow(np.log10(cutout), origin='lower', vmin=1.5, vmax=2.5)
-    ax1.set_title('SN + Host original image cutout')
+        # convert to integer pixels
+        row = int(ysn)
+        col = int(xsn)
+        # print('SN row:', row, 'col:', col)
 
-    ax2.imshow(np.log10(host_model), origin='lower', vmin=1.5, vmax=2.5)
-    ax2.set_title('File: ' + fname + '\n' + 'Host model')
+        # get cutout size config
+        cs_x = cfg['cutoutsize_x']
+        cs_y_lo = cfg['cutoutsize_y_lo']
+        cs_y_hi = cfg['cutoutsize_y_hi']
 
-    ax3.imshow(np.log10(recovered_sn_2d), origin='lower',
-               vmin=1.5, vmax=2.5)
-    ax3.set_title('SN residual')
+        # Cutout centered on SN loc
+        cutout = prismdata[row - cs_y_lo: row + cs_y_hi,
+                           col - int(cs_x/2): col + int(cs_x/2)]
 
-    fig.savefig(fname.replace('.fits', '_2dparamfit.png'),
-                dpi=200, bbox_inches='tight')
-    fig.clear()
-    plt.close(fig)
+        # Get host location within cutout
+        cutout_host_x = int(cs_x/2) + int(int(xhost) - col)
 
-    # ==========
-    # Now plot input and recovered spectra
-    fig = plt.figure(figsize=(6, 4))
-    gs = GridSpec(10, 5, hspace=0.05, wspace=0.05,
-                  top=0.95, bottom=0.1, left=0.1, right=0.95)
-    ax1 = fig.add_subplot(gs[:7, :])
-    ax2 = fig.add_subplot(gs[7:, :])
+        # plot
+        if cfg['showcutoutplot']:
+            fig = plt.figure()
+            ax = fig.add_subplot(111)
+            cax = ax.imshow(np.log10(cutout), origin='lower',
+                            vmin=1.5, vmax=2.5)
+            cbar = fig.colorbar(cax)
+            cbar.set_label('log(pix val)')
+            plt.show()
+            fig.savefig(fname.replace('.fits', '_cutout.png'), dpi=200,
+                        bbox_inches='tight')
+            fig.clear()
+            plt.close(fig)
 
-    ax2.set_xlabel('Wavelength [microns]')
-    ax1.set_ylabel('Flam [erg/s/cm2/Angstrom]')
-    ax2.set_ylabel('Residuals')
+        # ==========================
+        # Now fit the profile
+        xarr = np.arange(cs_x)
 
-    host_smaller_cutout = host_model[:, cutout_host_x - 25:cutout_host_x + 25]
-    host_rec_flux = np.mean(host_smaller_cutout, axis=1)
+        # Empty array for host model
+        host_model = np.zeros_like(cutout)
+        # Fit and update
+        host_model, hf_par = gen_host_model(cutout, cfg)
+        iter_flag, host_model, host_fit_params = update_host_model(cutout,
+                                                                   host_model,
+                                                                   hf_par,
+                                                                   cfg)
 
-    sn_input_wav_microns = sn_input_wav/1e4
+        # Iterate and test
+        """
+        num_iter = 1
+        max_iter = cfg['max_iter']
+        while num_iter < max_iter:
+            print('Iteration:', num_iter)
+            host_model, host_fit_params = gen_host_model(cutout, cfg)
+            iter_flag, host_model = update_host_model(cutout, host_model,
+                                                      host_fit_params, cfg)
+            if iter_flag:
+                num_iter += 1
+                continue
+            else:
+                break
+        print('\nDone in', num_iter, 'iterations.\n')
+        """
 
-    ax1.plot(specwav, sn_1d_spec_phys, '-',
-             color='crimson', lw=1.5, label='Recovered SN spec [flam]')
-    ax1.plot(sn_input_wav_microns, sn_input_flux, '-',
-             color='mediumseagreen', label='Input SN spec')
+        # ==========================
+        # Get the SN spectrum
+        recovered_sn_2d = cutout - host_model
 
-    # Also plot the SN spectrum without host contamination subtracted
-    ax1.plot(specwav, sn_1d_phys_host, '-',
-             color='slategray', lw=1.5,
-             label='SN spec without host\n' + 'contam. subtracted')
+        imghdr = prismimg[sciextnum].header
+        wcs = WCS(imghdr)
+        # WCS unused if coordtype is 'pix'.
+        # The object X, Y are the center of the cutout
+        # and the 1.55 micron row index.
+        obj_x = int(cs_x/2)
+        obj_y = cutout.shape[0] - cs_y_hi
+        # print(obj_x, obj_y)
+        # Extraction params from config
+        one_sided_width = cfg['obj_one_sided_width']
+        swav = cfg['start_wav']
+        ewav = cfg['end_wav']
+        rs, re, cs, ce, specwav = oned_utils.get_bbox_rowcol(obj_x, obj_y, wcs,
+                                                             one_sided_width,
+                                                             coordtype='pix',
+                                                             start_wav=swav,
+                                                             end_wav=ewav)
+        # print('\n1D-Extraction params:')
+        # print('Row start:', rs, 'Row end:', re)
+        # print('Col start:', cs, 'Col end:', ce)
+        # print('Wavelengths:', specwav)
+        # print(specwav.shape)
 
-    ax1.legend(loc=0, fontsize=10)
+        # Collapse to 1D
+        # Since we know the location of the SN, we will just
+        # use a few pixels around it.
+        spec2d = recovered_sn_2d[rs: re + 1, cs: ce + 1]
+        sn_1d_spec = np.nanmean(spec2d, axis=1)
 
-    ax1.set_xlim(0.65, 2.0)
-    ax1.set_ylim(0, 1.5e-19)
+        # convert to physical units
+        et = cfg['spec_img_exptime']
+        sn_1d_spec_phys = oned_utils.convert_to_phys_units(spec2d, specwav,
+                                                           'DN',
+                                                           prism_effarea_wave,
+                                                           prism_effarea,
+                                                           subtract_bkg=False,
+                                                           spec_img_exptime=et)
 
-    ax1.set_xticklabels([])
+        # also try showing what you'd get if you didn't subtract the host
+        spec2d_with_host = cutout[rs: re + 1, cs: ce + 1]
+        sn_1d_phys_host = oned_utils.convert_to_phys_units(spec2d_with_host,
+                                                           specwav, 'DN',
+                                                           prism_effarea_wave,
+                                                           prism_effarea,
+                                                           subtract_bkg=False,
+                                                           spec_img_exptime=et)
 
-    # plot residuals
-    sn_input_flux_inwav = griddata(points=sn_input_wav_microns,
-                                   values=sn_input_flux,
-                                   xi=specwav)
-    spec_resid = (sn_input_flux_inwav - sn_1d_spec_phys) / sn_input_flux_inwav
+        # ==========
+        # Show all host subtraction
+        fig = plt.figure(figsize=(6, 6))
 
-    ax2.scatter(specwav, spec_resid, s=4, c='k')
+        ax1 = fig.add_subplot(131)
+        ax2 = fig.add_subplot(132)
+        ax3 = fig.add_subplot(133)
 
-    ax2.set_xlim(0.65, 2.0)
-    ax2.set_ylim(-1.5, 1.5)
+        ax1.imshow(np.log10(cutout), origin='lower', vmin=1.5, vmax=2.5)
+        ax1.set_title('SN + Host original image cutout')
 
-    fig.savefig(fname.replace('.fits', '_1dparamfit_phys.png'),
-                dpi=200, bbox_inches='tight')
-    # plt.show()
+        ax2.imshow(np.log10(host_model), origin='lower', vmin=1.5, vmax=2.5)
+        ax2.set_title('File: ' + fname + '\n' + 'Host model')
 
-    # Close image
-    prismimg.close()
+        ax3.imshow(np.log10(recovered_sn_2d), origin='lower',
+                   vmin=1.5, vmax=2.5)
+        ax3.set_title('SN residual')
+
+        fig.savefig(fname.replace('.fits', '_2dparamfit.png'),
+                    dpi=200, bbox_inches='tight')
+        fig.clear()
+        plt.close(fig)
+
+        # ==========
+        # Now plot input and recovered spectra
+        fig = plt.figure(figsize=(6, 4))
+        gs = GridSpec(10, 5, hspace=0.05, wspace=0.05,
+                      top=0.95, bottom=0.1, left=0.1, right=0.95)
+        ax1 = fig.add_subplot(gs[:7, :])
+        ax2 = fig.add_subplot(gs[7:, :])
+
+        ax2.set_xlabel('Wavelength [microns]')
+        ax1.set_ylabel('Flam [erg/s/cm2/Angstrom]')
+        ax2.set_ylabel('Residuals')
+
+        host_smaller_cutout = host_model[:,
+                                         cutout_host_x - 25:cutout_host_x + 25]
+        host_rec_flux = np.mean(host_smaller_cutout, axis=1)
+
+        sn_input_wav_microns = sn_input_wav/1e4
+
+        ax1.plot(specwav, sn_1d_spec_phys, '-',
+                 color='crimson', lw=1.5, label='Recovered SN spec [flam]')
+        ax1.plot(sn_input_wav_microns, sn_input_flux, '-',
+                 color='mediumseagreen', label='Input SN spec')
+
+        # Also plot the SN spectrum without host contamination subtracted
+        ax1.plot(specwav, sn_1d_phys_host, '-',
+                 color='slategray', lw=1.5,
+                 label='SN spec without host\n' + 'contam. subtracted')
+
+        ax1.legend(loc=0, fontsize=10)
+
+        ax1.set_xlim(0.65, 2.0)
+        ax1.set_ylim(0, 1.5e-19)
+
+        ax1.set_xticklabels([])
+
+        # plot residuals
+        sn_input_flux_inwav = griddata(points=sn_input_wav_microns,
+                                       values=sn_input_flux,
+                                       xi=specwav)
+        spec_resid = ((sn_input_flux_inwav - sn_1d_spec_phys)
+                      / sn_input_flux_inwav)
+
+        ax2.scatter(specwav, spec_resid, s=4, c='k')
+
+        ax2.set_xlim(0.65, 2.0)
+        ax2.set_ylim(-1.5, 1.5)
+
+        fig.savefig(fname.replace('.fits', '_1dparamfit_phys.png'),
+                    dpi=200, bbox_inches='tight')
+        # plt.show()
+
+        # Close image
+        prismimg.close()
 
     sys.exit(0)

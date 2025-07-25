@@ -38,7 +38,14 @@ spec_img_exptime: 900  # seconds
 applysmoothingperrow: False
 
 # File name
-fname: 'test_prism_WFI_rollAngle030_dither0.fits'
+# Provide a list even if there is only one name
+# We assume that the host and SN input spectra are the same
+# for the entire file name list provided by the user.
+fname: ['test_prism_WFI_rollAngle050_dither0.fits',
+        'test_prism_WFI_rollAngle060_dither0.fits',
+        'test_prism_WFI_rollAngle070_dither0.fits',
+        'test_prism_WFI_rollAngle080_dither0.fits',
+        'test_prism_WFI_rollAngle090_dither0.fits']
 
 # Extension numbers in FITS file
 sciextnum: 1

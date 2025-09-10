@@ -2,6 +2,7 @@ import numpy as np
 from astropy.io import fits
 import matplotlib.pyplot as plt
 from astropy.modeling import models, fitting
+from astropy.convolution import convolve_models
 import astropy
 from astropy.wcs import WCS
 from scipy.interpolate import griddata
@@ -22,6 +23,13 @@ datadir = hostsubdir + 'simdata_prism_galsn/'
 x1d_dir = home + '/Documents/Roman/prism_quick_reduction/romanprism-fast-x1d/'
 sys.path.append(x1d_dir)
 import romanprism_fast_x1d as oned_utils  # noqa
+
+
+def get_psf():
+
+
+
+    return psf_astropy_model
 
 
 def get_model_init(model, y_fit, x_fit, xloc):
@@ -132,9 +140,12 @@ def fit_1d(y_fit, x_fit, xloc=50, model=None, row_idx=None):
 
     model_init = get_model_init(model, y_fit, x_fit, xloc)
 
+    psf = get_psf()
+    compound_model_init = convolve_models(model_init, psf)
+
     fit = fitting.TRFLSQFitter()
     try:
-        fitted_model = fit(model_init, x_fit, y_fit)
+        fitted_model = fit(compound_model_init, x_fit, y_fit)
     except (ValueError, astropy.modeling.fitting.NonFiniteValueError) as e:
         print('\nEncountered exception:', e)
         print(x_fit)
@@ -602,23 +613,18 @@ if __name__ == '__main__':
     print('* NOTE: Using only Sersic/Gaussian profile to fit galaxy.',
           'This really should be a model profile convolved with',
           'lambda dependent PSF. Convolve Moffat for SN with PSF too.')
-    print('* NOTE: approx host galaxy position used here for masking.',
-          'This needs to come from the user.')
     print('TODO: write code to handle case where host galaxy is also',
           'contaminated by another galaxy spectrum (only a part',
           'of the host spec will be covered by the other spectrum).')
-    print('* NOTE: using the max val in the cutout as the amplitude',
-          'as the initial guess. Should work in most cases.')
-    print('* NOTE: SN 1D spectrum is just collapsing the 2D residuals.',
-          'It calls onedutils which does the simple sum.',
-          'This should use something like the Horne86 optimal extraction.')
     print('* NOTE: iterate with constraints on fit params.',
           'Also try smoothing host model before next iteration.')
     print('* NOTE: Check WCS and x,y coords returned by above func in ds9.')
     print('* NOTE: Figure out how to handle ERR and DQ extensions.')
     print('* NOTE: Show resid hist with SN masked.')
     print('* NOTE: Try grid of sims.')
-    print('* NOTE: Move to testing with HST data once above items are done.')
+    print('* NOTE: Move to testing with HST data once above items are done.',
+          'One of the tests should be a comparison to what',
+          'Russell had for Graur et al.')
     print('\n')
 
     # ==========================

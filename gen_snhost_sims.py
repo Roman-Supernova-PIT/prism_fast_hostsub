@@ -37,6 +37,11 @@ SN_y = 70
 scale_factor = 20  # scaling factor for SN flux
 exposureTime = 900.0 * u.s
 
+subtractBackground = True
+nCPUs = 6
+
+print('\n')
+print('Roman pixel scale assumed:', ROMAN_PIXSCALE)
 # ==============
 # Open datacube
 hduList = fits.open(datacubeFilename)
@@ -51,13 +56,20 @@ redshift = hduList[0].header['REDSHIFT']
 wavelength = (np.arange(lambdaMin, lambdaMax+0.1*lambdaStep, lambdaStep)
               * u.angstrom)
 
+# Effective pixel scale for the oversampled datacube
+eff_pixscl = ROMAN_PIXSCALE / float(osamp)
+
 # load SN SED
 SN = np.loadtxt(hostsubdir + 'simdata_prism_galsn/lfnana_fnu.txt')
 SN_SED = interp1d(SN[:, 0], SN[:, 1], kind='linear')
 
 datacube[:, SN_y - 1, SN_x - 1] += (scale_factor
                                     * SN_SED(wavelength) * syn.units.FNU)
+print('Inserted SN SED at datacube coords (DS9 x, y):', SN_x, SN_y)
+print('Inserted SN SED at datacube coords (row, col):', SN_y - 1, SN_x - 1)
 
+# Get coordinates where the center (?) of the modified datacube
+# with the SN SED inserted will be placed in the Roman exposure
 c1 = DEF_COORDS.spherical_offsets_by(0.0 * u.arcsec,
                                      0.0 * u.pix * ROMAN_PIXSCALE)
 # c2 = DEF_COORDS.spherical_offsets_by(50.0 * u.pix * ROMAN_PIXSCALE,
@@ -67,12 +79,17 @@ c1 = DEF_COORDS.spherical_offsets_by(0.0 * u.arcsec,
 
 coordinatesList = [c1]
 
-print('Coordinates List:', coordinatesList)
+print('\nCoordinates where the center (?) of the modified datacube',
+      'with the SN SED inserted will be placed in the Roman exposure:')
+print(coordinatesList)
 
+# use the two lines below for an array of roll angles
 delAngle = 10.0
-rollAngles = coordinates.Angle(np.arange(0.0, 360.0, delAngle),
+rollAngles = coordinates.Angle(np.arange(0.0, 10.0, delAngle),
                                unit='deg').wrap_at(360.0 * u.deg)
-rollAngles = coordinates.Angle([0], unit='deg').wrap_at(360.0 * u.deg)
+
+# use this line for just the 0 deg roll angle
+# rollAngles = coordinates.Angle([0.0], unit='deg').wrap_at(360.0 * u.deg)
 
 print('Roll angles:', rollAngles)
 
@@ -85,8 +102,8 @@ delta = np.array([c.dec.deg for c in coordinatesList])
 
 # Find the central coordinates of SCA01 in the v2-v3 plane
 wfi01_v2, wfi01_v3 = roman_apertures[0].idl_to_tel(0, 0)
-
 print('SCA 01 center coords (v2, v3):', wfi01_v2, wfi01_v3)
+print('\n')
 
 """
 # Now we plot the detector orientations as a function of roll angle,
@@ -151,12 +168,8 @@ print("Plotting all done!")
 """
 
 scene = Scene(datacube, wavelength,
-              pixScale=constants.ROMAN_PIXSCALE / osamp,
+              pixScale=ROMAN_PIXSCALE / osamp,
               oversample=osamp)
-
-subtractBackground = True
-
-nCPUs = None
 
 nP, nQ = scene.nP, scene.nQ
 
@@ -202,11 +215,10 @@ for k, rollAngle in enumerate(rollAngles):
         effArea = AEff.getEffectiveArea(wavePix, filterName)
         nonZeroes = np.argwhere(effArea > 0).flatten()
 
-        bgPhotonRate = (syn.units.convert_flux(wavePix,
-                                               bg.getBackground(wavePix,
-                                                                oversample=osamp),
-                                               syn.units.PHOTLAM)
-                        * effArea * dispersion / scene.oversample).decompose()
+        bkg = bg.getBackground(wavePix, oversample=osamp)
+        bkg_flam = syn.units.convert_flux(wavePix, bkg, syn.units.PHOTLAM)
+        bgPhotonRate = (bkg_flam * effArea * dispersion
+                        / scene.oversample).decompose()
 
         bgRate = (bgPhotonRate.sum().value
                   * (scene.oversample ** 2) * u.adu / u.s)
@@ -256,9 +268,13 @@ for k, rollAngle in enumerate(rollAngles):
                           pa_aper.value, aperture.AperName,
                           in_footprint_coords)
 
-                    psfDrizzleMatrix = drz.getAreaFractionMatrix(psf.shape[2], psf.shape[1], 0, 0, pa_aper,
-                                                                 constants.ROMAN_PIXSCALE / float(osamp),
-                                                                 nXOut=nWX, nYOut=nWY, oversample=1)
+                    psfDrizzleMatrix = drz.getAreaFractionMatrix(psf.shape[2],
+                                                                 psf.shape[1],
+                                                                 0, 0, pa_aper,
+                                                                 eff_pixscl,
+                                                                 nXOut=nWX,
+                                                                 nYOut=nWY,
+                                                                 oversample=1)
 
                     naxis1, naxis2 = aperture.XSciSize, aperture.YSciSize
                     crpix1, crpix2 = aperture.XSciRef, aperture.YSciRef
@@ -278,7 +294,7 @@ for k, rollAngle in enumerate(rollAngles):
                             drzMatrix =\
                                 drz.getAreaFractionMatrix(nQ, nP, dx, dy,
                                                           angle,
-                                                          constants.ROMAN_PIXSCALE / float(osamp),
+                                                          eff_pixscl,
                                                           nXOut=naxis1,
                                                           nYOut=naxis2,
                                                           xCOut=xCOut,
@@ -295,10 +311,13 @@ for k, rollAngle in enumerate(rollAngles):
                             photonRate = (photonRate * 1.0 * u.adu / u.ph).decompose()  # Conversion rate from photon to ADU
 
                             if (filterName == 'grism') or (filterName == 'prism'):
-                                shiftY_arcsec = pixCoords[l] * constants.ROMAN_PIXSCALE
-                                drzMatrix     = drz.getAreaFractionMatrix(nQ, nP, dx, dy + shiftY_arcsec, angle,
-                                                                          constants.ROMAN_PIXSCALE / float(osamp), nXOut=naxis1, nYOut=naxis2,
-                                                                          xCOut=xCOut, yCOut=yCOut, oversample=downsample)
+                                shiftY_arcsec = pixCoords[l] * ROMAN_PIXSCALE
+                                drzMatrix =\
+                                    drz.getAreaFractionMatrix(nQ, nP, dx,
+                                                              dy + shiftY_arcsec,
+                                                              angle, eff_pixscl,
+                                                              nXOut=naxis1, nYOut=naxis2,
+                                                              xCOut=xCOut, yCOut=yCOut, oversample=downsample)
 
                             thisSpecRate += np.nan_to_num((drzMatrix @ np.nan_to_num(photonRate).flatten()).reshape((naxis2, naxis1)))
                         return thisSpecRate
@@ -321,9 +340,7 @@ for k, rollAngle in enumerate(rollAngles):
                     # Make values positive so that random poisson
                     # generator does not break
                     specRate = np.nan_to_num(np.clip(specRate, a_min=0, a_max=None))
-
                     specRate *= u.adu / u.s
-
                     noisySpec = np.random.poisson((specRate + bgRate).value * exposureTime.value) * u.adu
 
                     if subtractBackground:
@@ -332,7 +349,10 @@ for k, rollAngle in enumerate(rollAngles):
                     stdDev = np.sqrt((specRate + bgRate) * exposureTime).value * u.adu
 
                     alpha0, delta0 = aperture.idl_to_sky(0, 0)
-                    wcs = astro.getWCS(rollAngle, filterName, naxis2, naxis1, alpha=alpha0, delta=delta0, crpix1=crpix1, crpix2=crpix2, oversample=1)
+                    wcs = astro.getWCS(rollAngle, filterName, naxis2, naxis1,
+                                       alpha=alpha0, delta=delta0,
+                                       crpix1=crpix1, crpix2=crpix2,
+                                       oversample=1)
 
                     hduListOut = []
 

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "roman-prism-hostsub"        # must be unique on PyPI
+version = "0.1.0"
+description = "This code is intended to be used with Roman prism data of host-galaxies
+               and transients taken at a single orient. The code will attempt to
+               automatically subtract the underlying host-galaxy spectrum and return
+               the cleaned transient spectrum."
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+  { name="Bhavin Joshi", email="bjoshi5@jhu.edu" }
+]
+
+dependencies = [
+  "numpy",
+  "astropy",
+  "scipy",
+  "matplotlib",
+  "yaml",
+  "tqdm",
+  "pprint"
+]

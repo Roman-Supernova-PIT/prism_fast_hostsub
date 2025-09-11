@@ -157,3 +157,4 @@ cython_debug/
 *.png
 *.pdf
 *.ps
+hst_grism_test/.DS_Store

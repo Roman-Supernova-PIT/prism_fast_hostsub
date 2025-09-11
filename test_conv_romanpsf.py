@@ -26,6 +26,13 @@ print('\nNOTE: Only broadband PSFs available through romanisim.\n',
       'Using PSF constructed by Massimo for the prism.',
       'Switch back to romanisim when prism PSF is available there.')
 
+# First test if you can convolve an astropy model with a PSF
+# which will be given as a numpy array
+g = models.Gaussian1D(amplitude=1.2, mean=0.9, stddev=0.5)
+
+sys.exit(0)
+
+
 # ======
 # Get Roman PSF from Tri
 hostsubdir = home + '/Documents/Roman/PIT/prism/hostlight_subtraction/'
@@ -101,7 +108,7 @@ model_init = models.Moffat1D(amplitude=amplitude_init, x_0=x_0_init,
                                      'gamma': (0, 10),
                                      'alpha': (0, 10)})
 # convolve with PSF
-f129_psf_model = Fittable2DModel()
+f129_psf_model = Fittable2DModel(f129_psf)
 prismpsf = Model2DKernel(f129_psf_model)
 conv_model = convolve_models(model_init, prismpsf)
 

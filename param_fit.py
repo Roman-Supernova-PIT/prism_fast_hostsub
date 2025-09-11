@@ -2,7 +2,6 @@ import numpy as np
 from astropy.io import fits
 import matplotlib.pyplot as plt
 from astropy.modeling import models, fitting
-from astropy.convolution import convolve_models
 import astropy
 from astropy.wcs import WCS
 from scipy.interpolate import griddata
@@ -23,13 +22,6 @@ datadir = hostsubdir + 'simdata_prism_galsn/'
 x1d_dir = home + '/Documents/Roman/prism_quick_reduction/romanprism-fast-x1d/'
 sys.path.append(x1d_dir)
 import romanprism_fast_x1d as oned_utils  # noqa
-
-
-def get_psf():
-
-
-
-    return psf_astropy_model
 
 
 def get_model_init(model, y_fit, x_fit, xloc):
@@ -140,12 +132,9 @@ def fit_1d(y_fit, x_fit, xloc=50, model=None, row_idx=None):
 
     model_init = get_model_init(model, y_fit, x_fit, xloc)
 
-    psf = get_psf()
-    compound_model_init = convolve_models(model_init, psf)
-
     fit = fitting.TRFLSQFitter()
     try:
-        fitted_model = fit(compound_model_init, x_fit, y_fit)
+        fitted_model = fit(model_init, x_fit, y_fit)
     except (ValueError, astropy.modeling.fitting.NonFiniteValueError) as e:
         print('\nEncountered exception:', e)
         print(x_fit)
